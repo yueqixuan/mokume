@@ -107,11 +107,13 @@ mokume/
 | **iBAQ** | Intensity-Based Absolute Quantification | Yes | `peptides_to_protein()` | No |
 | **Top3** | Average of 3 most intense peptides | No | `Top3Quantification` | No |
 | **TopN** | Average of N most intense peptides | No | `TopNQuantification` | No |
-| **MaxLFQ** | Delayed normalization with parallelization | No | `MaxLFQQuantification` | No |
-| **DirectLFQ** | Intensity traces with hierarchical alignment | No | `DirectLFQQuantification` | Yes* |
+| **MaxLFQ** | Delayed normalization with parallelization | No | `MaxLFQQuantification` | No* |
+| **DirectLFQ** | Intensity traces with hierarchical alignment | No | `DirectLFQQuantification` | Yes** |
 | **Sum** | Sum of all peptide intensities | No | `AllPeptidesQuantification` | No |
 
-*DirectLFQ requires optional install: `pip install mokume[directlfq]`
+*MaxLFQ automatically uses DirectLFQ when installed for best accuracy, falling back to built-in implementation otherwise.
+
+**DirectLFQ requires optional install: `pip install mokume[directlfq]`
 
 ## CLI Usage
 
@@ -233,15 +235,22 @@ result = top3.quantify(
 topn = TopNQuantification(n=5)
 result = topn.quantify(peptides, protein_column="ProteinName", ...)
 
-# --- MaxLFQ Quantification (parallelized, variance-guided) ---
+# --- MaxLFQ Quantification ---
+# Automatically uses DirectLFQ if installed, otherwise falls back to built-in
 maxlfq = MaxLFQQuantification(
     min_peptides=2,
-    n_jobs=4,              # Use 4 parallel cores
-    use_variance_guided=True,  # Smarter merging (inspired by DirectLFQ)
+    threads=4,              # Use 4 parallel cores
 )
 result = maxlfq.quantify(peptides, protein_column="ProteinName", ...)
 
-# --- DirectLFQ Quantification (optional dependency) ---
+# Check which implementation is being used
+print(f"Using DirectLFQ: {maxlfq.using_directlfq}")
+# For best accuracy, install DirectLFQ: pip install mokume[directlfq]
+
+# Force built-in implementation (for testing/comparison)
+maxlfq_builtin = MaxLFQQuantification(min_peptides=2, force_builtin=True)
+
+# --- DirectLFQ Quantification (standalone, optional dependency) ---
 if is_directlfq_available():
     from mokume.quantification import DirectLFQQuantification
     directlfq = DirectLFQQuantification(min_nonan=2)

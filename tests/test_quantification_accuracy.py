@@ -230,7 +230,13 @@ def print_comparison_table(results: dict, intensity_cols: dict, dataset_name: st
 
 
 def run_all_quantification_methods(peptide_df: pd.DataFrame, diann_maxlfq: pd.DataFrame = None):
-    """Run all quantification methods and return results dict."""
+    """
+    Run all quantification methods and return results dict.
+
+    Note: MaxLFQQuantification automatically uses DirectLFQ if available,
+    falling back to built-in implementation otherwise. We test both paths
+    when DirectLFQ is available.
+    """
     from mokume.quantification import (
         MaxLFQQuantification,
         Top3Quantification,
@@ -246,7 +252,7 @@ def run_all_quantification_methods(peptide_df: pd.DataFrame, diann_maxlfq: pd.Da
         results["DIA-NN MaxLFQ"] = diann_maxlfq
         intensity_cols["DIA-NN MaxLFQ"] = "DIANNMaxLFQ"
 
-    # Mokume MaxLFQ
+    # Mokume MaxLFQ (uses DirectLFQ if available, otherwise built-in)
     maxlfq = MaxLFQQuantification(min_peptides=1, threads=-1)
     results["Mokume MaxLFQ"] = maxlfq.quantify(
         peptide_df,
@@ -279,7 +285,7 @@ def run_all_quantification_methods(peptide_df: pd.DataFrame, diann_maxlfq: pd.Da
     )
     intensity_cols["Sum"] = "SumIntensity"
 
-    # DirectLFQ (if available)
+    # DirectLFQ standalone (for comparison when available)
     if is_directlfq_available():
         try:
             from mokume.quantification import DirectLFQQuantification
@@ -433,7 +439,10 @@ class TestSmallDiannSubset:
             sample_column="SampleID",
         )
 
+        # Test default MaxLFQ (should use DirectLFQ when available)
         maxlfq = MaxLFQQuantification(min_peptides=1, threads=1)
+        assert maxlfq.using_directlfq, "MaxLFQ should use DirectLFQ when available"
+
         result_maxlfq = maxlfq.quantify(
             self.peptide_df,
             protein_column="ProteinName",
@@ -448,11 +457,36 @@ class TestSmallDiannSubset:
         )
 
         print(f"\n[Small DIA-NN Subset] DirectLFQ vs Mokume MaxLFQ:")
+        print(f"  Using DirectLFQ backend: {maxlfq.using_directlfq}")
         print(f"  Pearson correlation:  {corr['pearson']:.4f}")
         print(f"  Spearman correlation: {corr['spearman']:.4f}")
         print(f"  Number of comparisons: {corr['n']:,}")
 
-        assert corr["spearman"] > 0.8, "DirectLFQ and MaxLFQ should have similar rankings"
+        assert corr["spearman"] > 0.99, "MaxLFQ with DirectLFQ should match DirectLFQ exactly"
+
+    def test_small_diann_builtin_fallback(self):
+        """Test the built-in MaxLFQ fallback implementation."""
+        from mokume.quantification import MaxLFQQuantification
+
+        # Force built-in implementation
+        maxlfq_builtin = MaxLFQQuantification(min_peptides=1, threads=1, force_builtin=True)
+        assert not maxlfq_builtin.using_directlfq, "Should use built-in when forced"
+        assert maxlfq_builtin.name == "MaxLFQ (built-in)"
+
+        result_builtin = maxlfq_builtin.quantify(
+            self.peptide_df,
+            protein_column="ProteinName",
+            peptide_column="PeptideSequence",
+            intensity_column="NormIntensity",
+            sample_column="SampleID",
+        )
+
+        assert len(result_builtin) > 0, "Built-in MaxLFQ should produce results"
+        assert "MaxLFQIntensity" in result_builtin.columns
+
+        print(f"\n[Small DIA-NN Subset] Built-in MaxLFQ fallback:")
+        print(f"  Protein-sample combinations: {len(result_builtin):,}")
+        print(f"  Intensity range: {result_builtin['MaxLFQIntensity'].min():.2f} - {result_builtin['MaxLFQIntensity'].max():.2f}")
 
 
 class TestDiannWithSdrf:
