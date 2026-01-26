@@ -1,0 +1,76 @@
+[tool.poetry]
+name = "mokume"
+description = "A comprehensive proteomics quantification library supporting multiple methods (iBAQ, Top3, TopN, MaxLFQ)"
+readme = "README.md"
+license = "MIT"
+version = "0.1.0"
+authors = [
+    "Yasset Perez-Riverol <ypriverol@gmail.com>",
+    "Dai Chengxin <chengxin2024@126.com>",
+    "Julianus Pfeuffer <jule.pf@gmail.com>",
+    "Joshua Klein <joshua.adam.klein@gmail.com>",
+    "Enrique Audain <enrique.audain.martinez@uni-oldenburg.de>",
+    "Ping Zheng <zprobot80@gmail.com>"
+]
+keywords = [
+    "quantms",
+    "proteomics",
+    "mass-spectrometry",
+    "data-analysis",
+    "big data",
+    "ibaq",
+    "quantification"
+]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Development Status :: 4 - Beta"
+]
+packages = [
+    { include = "mokume" }
+]
+
+[tool.poetry.dependencies]
+python = ">=3.9"
+scikit-learn = "*"
+pyopenms = "*"
+numpy = "<2.1.0"
+click = "*"
+pandas = "*"
+matplotlib = "*"
+pyarrow = ">=16.1.0"
+duckdb = ">=0.10.1"
+qnorm  = "*"
+scipy  = ">=1.10"
+seaborn = ">=0.13.2"
+typing_extensions = ">=4.6.3"
+inmoose = "*"
+anndata = "*"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+pytest-cov = "^4.0"
+flake8 = "^7.0"
+
+[tool.poetry.urls]
+GitHub = "https://github.com/bigbio/mokume/"
+PyPi = "https://pypi.org/project/mokume/"
+Quantms = "https://quantms.org"
+LICENSE = "https://github.com/bigbio/mokume/blob/main/LICENSE"
+
+[tool.poetry.scripts]
+mokume = "mokume.mokume_cli:main"
+
+[tool.isort]
+profile = "black"
+
+[tool.black]
+line-length = 99
+target-version = ["py39"]
+
+[build-system]
+requires = ["poetry-core>=1.2.0"]
+build-backend = "poetry.core.masonry.api"

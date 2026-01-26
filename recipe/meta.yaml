@@ -1,0 +1,54 @@
+# recipe/meta.yaml
+package:
+  name: mokume
+  version: "0.1.0"
+
+source:
+  path: ../
+
+build:
+  entry_points:
+    - mokume=mokume.mokume_cli:main
+  run_exports:
+    - {{ pin_subpackage('mokume', max_pin="x.x") }}
+  script: "{{ PYTHON }} -m pip install . --no-deps --no-build-isolation --no-cache-dir -vvv"
+  number: 0
+  noarch: python
+
+requirements:
+  host:
+    - python
+    - pip
+    - poetry-core >=1.2.0
+  run:
+    - python>=3.9
+    - scikit-learn
+    - pyopenms
+    - numpy<2.1.0
+    - click
+    - pandas
+    - matplotlib
+    - pyarrow>=16.1.0
+    - duckdb>=0.10.1
+    - qnorm
+    - scipy>=1.10
+    - seaborn>=0.13.2
+    - typing_extensions>=4.6.3
+    - inmoose
+    - anndata
+test:
+  imports:
+    - mokume
+  commands:
+    - mokume --help
+
+about:
+  home: https://www.github.com/bigbio/mokume
+  summary: A comprehensive proteomics quantification library supporting multiple methods (iBAQ, Top3, TopN, MaxLFQ)
+  license: MIT
+  license_file: LICENSE
+  dev_url: https://www.github.com/bigbio/mokume
+
+extra:
+  recipe-maintainers:
+    - ypriverol

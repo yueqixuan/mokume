@@ -1,0 +1,15 @@
+# Core dependencies (aligned with pyproject.toml)
+scikit-learn
+pyopenms
+numpy<2.1.0
+click
+pandas
+matplotlib
+pyarrow>=16.1.0
+duckdb>=0.10.1
+qnorm
+scipy>=1.10
+seaborn>=0.13.2
+typing_extensions>=4.6.3
+inmoose
+anndata
