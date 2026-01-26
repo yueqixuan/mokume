@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "mokume"
-description = "A comprehensive proteomics quantification library supporting multiple methods (iBAQ, Top3, TopN, MaxLFQ)"
+description = "A comprehensive proteomics quantification library supporting multiple methods (iBAQ, Top3, TopN, MaxLFQ, DirectLFQ)"
 readme = "README.md"
 license = "MIT"
 version = "0.1.0"
@@ -54,6 +54,14 @@ anndata = "*"
 pytest = "^8.0"
 pytest-cov = "^4.0"
 flake8 = "^7.0"
+
+[tool.poetry.extras]
+directlfq = ["directlfq"]
+all = ["directlfq"]
+
+[tool.poetry.dependencies.directlfq]
+version = "^0.6"
+optional = true
 
 [tool.poetry.urls]
 GitHub = "https://github.com/bigbio/mokume/"

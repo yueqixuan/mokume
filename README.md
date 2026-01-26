@@ -11,12 +11,18 @@ The name comes from [mokume-gane](https://en.wikipedia.org/wiki/Mokume-gane) (�
 
 ## Overview
 
-**mokume** is a comprehensive proteomics quantification library that supports multiple protein quantification methods including iBAQ, Top3, TopN, and MaxLFQ. It provides feature/peptide normalization, batch correction, and various summarization strategies for the quantms ecosystem. This library is an evolution of [ibaqpy](https://github.com/bigbio/ibaqpy), extended to support a broader range of protein quantification methods beyond iBAQ.
+**mokume** is a comprehensive proteomics quantification library that supports multiple protein quantification methods including iBAQ, Top3, TopN, MaxLFQ, and DirectLFQ. It provides feature/peptide normalization, batch correction, and various summarization strategies for the quantms ecosystem. This library is an evolution of [ibaqpy](https://github.com/bigbio/ibaqpy), extended to support a broader range of protein quantification methods beyond iBAQ.
 
 ## Installation
 
 ```bash
 pip install mokume
+```
+
+With optional DirectLFQ support:
+
+```bash
+pip install mokume[directlfq]
 ```
 
 Or install from source:
@@ -61,7 +67,8 @@ mokume/
 │   ├── ibaq.py              # iBAQ implementation
 │   ├── top3.py              # Top3 quantification
 │   ├── topn.py              # TopN quantification
-│   ├── maxlfq.py            # MaxLFQ algorithm
+│   ├── maxlfq.py            # MaxLFQ algorithm (parallelized)
+│   ├── directlfq.py         # DirectLFQ wrapper (optional)
 │   └── all_peptides.py      # Sum of all peptides
 │
 ├── summarization/           # Intensity summarization strategies
@@ -95,13 +102,16 @@ mokume/
 
 ## Quantification Methods
 
-| Method | Description | Requires FASTA | Class |
-|--------|-------------|----------------|-------|
-| **iBAQ** | Intensity-Based Absolute Quantification | Yes | `peptides_to_protein()` |
-| **Top3** | Average of 3 most intense peptides | No | `Top3Quantification` |
-| **TopN** | Average of N most intense peptides | No | `TopNQuantification` |
-| **MaxLFQ** | Delayed normalization algorithm | No | `MaxLFQQuantification` |
-| **Sum** | Sum of all peptide intensities | No | `AllPeptidesQuantification` |
+| Method | Description | Requires FASTA | Class | Optional |
+|--------|-------------|----------------|-------|----------|
+| **iBAQ** | Intensity-Based Absolute Quantification | Yes | `peptides_to_protein()` | No |
+| **Top3** | Average of 3 most intense peptides | No | `Top3Quantification` | No |
+| **TopN** | Average of N most intense peptides | No | `TopNQuantification` | No |
+| **MaxLFQ** | Delayed normalization with parallelization | No | `MaxLFQQuantification` | No |
+| **DirectLFQ** | Intensity traces with hierarchical alignment | No | `DirectLFQQuantification` | Yes* |
+| **Sum** | Sum of all peptide intensities | No | `AllPeptidesQuantification` | No |
+
+*DirectLFQ requires optional install: `pip install mokume[directlfq]`
 
 ## CLI Usage
 
@@ -124,10 +134,16 @@ mokume peptides2protein --method topn --topn_n 5 \
     -p peptides.csv \
     -o proteins-top5.tsv
 
-# Using MaxLFQ
+# Using MaxLFQ with parallelization
 mokume peptides2protein --method maxlfq \
+    --n_jobs 4 \
     -p peptides.csv \
     -o proteins-maxlfq.tsv
+
+# Using DirectLFQ (requires: pip install mokume[directlfq])
+mokume peptides2protein --method directlfq \
+    -p peptides.csv \
+    -o proteins-directlfq.tsv
 
 # Using Sum of all peptides
 mokume peptides2protein --method sum \
@@ -196,6 +212,7 @@ from mokume.quantification import (
     MaxLFQQuantification,
     AllPeptidesQuantification,
     get_quantification_method,
+    is_directlfq_available,
     peptides_to_protein,  # iBAQ function
 )
 
@@ -216,17 +233,32 @@ result = top3.quantify(
 topn = TopNQuantification(n=5)
 result = topn.quantify(peptides, protein_column="ProteinName", ...)
 
-# --- MaxLFQ Quantification ---
-maxlfq = MaxLFQQuantification(min_peptides=2)
+# --- MaxLFQ Quantification (parallelized, variance-guided) ---
+maxlfq = MaxLFQQuantification(
+    min_peptides=2,
+    n_jobs=4,              # Use 4 parallel cores
+    use_variance_guided=True,  # Smarter merging (inspired by DirectLFQ)
+)
 result = maxlfq.quantify(peptides, protein_column="ProteinName", ...)
+
+# --- DirectLFQ Quantification (optional dependency) ---
+if is_directlfq_available():
+    from mokume.quantification import DirectLFQQuantification
+    directlfq = DirectLFQQuantification(min_nonan=2)
+    result = directlfq.quantify(peptides, protein_column="ProteinName", ...)
 
 # --- Sum of All Peptides ---
 sum_quant = AllPeptidesQuantification()
 result = sum_quant.quantify(peptides, protein_column="ProteinName", ...)
 
 # --- Factory Function ---
-method = get_quantification_method("maxlfq", min_peptides=2)
+method = get_quantification_method("maxlfq", min_peptides=2, n_jobs=-1)
 result = method.quantify(peptides, ...)
+
+# --- Check available methods ---
+from mokume.quantification import list_quantification_methods
+print(list_quantification_methods())
+# {'top3': True, 'topn': True, 'maxlfq': True, 'directlfq': False, 'sum': True}
 
 # --- iBAQ with Full Pipeline ---
 peptides_to_protein(
@@ -416,6 +448,7 @@ print(human.histone_entries)  # List of histone protein accessions
 | `Top3Intensity` | Average of top 3 peptides | Top3 |
 | `Top{N}Intensity` | Average of top N peptides | TopN |
 | `MaxLFQIntensity` | MaxLFQ algorithm result | MaxLFQ |
+| `DirectLFQIntensity` | DirectLFQ intensity traces | DirectLFQ |
 | `SumIntensity` | Sum of all peptides | Sum |
 
 ## Normalization Methods

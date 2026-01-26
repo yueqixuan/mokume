@@ -2,7 +2,10 @@
 Protein quantification methods for the mokume package.
 
 This module provides implementations for various protein quantification
-methods including iBAQ, Top3, TopN, MaxLFQ, and AllPeptides.
+methods including iBAQ, Top3, TopN, MaxLFQ, DirectLFQ, and AllPeptides.
+
+DirectLFQ is an optional dependency. Install with:
+    pip install mokume[directlfq]
 """
 
 from mokume.quantification.base import ProteinQuantificationMethod
@@ -18,6 +21,9 @@ from mokume.quantification.topn import TopNQuantification
 from mokume.quantification.maxlfq import MaxLFQQuantification
 from mokume.quantification.all_peptides import AllPeptidesQuantification
 
+# Lazy import for optional DirectLFQ
+from mokume.quantification.directlfq import is_directlfq_available
+
 __all__ = [
     # Base class
     "ProteinQuantificationMethod",
@@ -27,12 +33,25 @@ __all__ = [
     "extract_fasta",
     "PeptideProteinMapper",
     "ConcentrationWeightByProteomicRuler",
-    # Other quantification methods
+    # Quantification methods
     "Top3Quantification",
     "TopNQuantification",
     "MaxLFQQuantification",
     "AllPeptidesQuantification",
+    # DirectLFQ (optional)
+    "DirectLFQQuantification",
+    "is_directlfq_available",
+    # Factory function
+    "get_quantification_method",
 ]
+
+
+def __getattr__(name):
+    """Lazy import for optional dependencies."""
+    if name == "DirectLFQQuantification":
+        from mokume.quantification.directlfq import DirectLFQQuantification
+        return DirectLFQQuantification
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def get_quantification_method(method: str, **kwargs) -> ProteinQuantificationMethod:
@@ -43,9 +62,22 @@ def get_quantification_method(method: str, **kwargs) -> ProteinQuantificationMet
     ----------
     method : str
         Name of the quantification method. One of:
-        'top3', 'topn', 'maxlfq', 'all', 'sum'.
+        'top3', 'topn', 'maxlfq', 'directlfq', 'all', 'sum'.
     **kwargs
         Additional arguments passed to the quantification method constructor.
+
+        For MaxLFQ:
+            - min_peptides: int (default 2)
+            - n_jobs: int (default -1, all cores)
+            - use_variance_guided: bool (default True)
+
+        For TopN:
+            - n: int (default 3)
+
+        For DirectLFQ:
+            - min_nonan: int (default 1)
+            - num_cores: int (default None)
+            - deactivate_normalization: bool (default False)
 
     Returns
     -------
@@ -56,21 +88,74 @@ def get_quantification_method(method: str, **kwargs) -> ProteinQuantificationMet
     ------
     ValueError
         If the method name is not recognized.
+    ImportError
+        If DirectLFQ is requested but not installed.
+
+    Examples
+    --------
+    >>> method = get_quantification_method("maxlfq", min_peptides=2, n_jobs=4)
+    >>> result = method.quantify(peptide_df, ...)
+
+    >>> # DirectLFQ requires optional install
+    >>> method = get_quantification_method("directlfq", min_nonan=2)
     """
     method_lower = method.lower()
 
     if method_lower == "top3":
         return Top3Quantification()
+
     elif method_lower == "topn":
         n = kwargs.get("n", 3)
         return TopNQuantification(n=n)
+
     elif method_lower == "maxlfq":
-        min_peptides = kwargs.get("min_peptides", 2)
-        return MaxLFQQuantification(min_peptides=min_peptides)
+        return MaxLFQQuantification(
+            min_peptides=kwargs.get("min_peptides", 2),
+            n_jobs=kwargs.get("n_jobs", -1),
+            use_variance_guided=kwargs.get("use_variance_guided", True),
+            verbose=kwargs.get("verbose", 0),
+        )
+
+    elif method_lower == "directlfq":
+        from mokume.quantification.directlfq import DirectLFQQuantification
+        return DirectLFQQuantification(
+            min_nonan=kwargs.get("min_nonan", 1),
+            num_cores=kwargs.get("num_cores", None),
+            deactivate_normalization=kwargs.get("deactivate_normalization", False),
+        )
+
     elif method_lower in ("all", "sum", "allpeptides"):
         return AllPeptidesQuantification()
+
     else:
+        available = "top3, topn, maxlfq, directlfq, all/sum"
         raise ValueError(
             f"Unknown quantification method: {method}. "
-            f"Available methods: top3, topn, maxlfq, all"
+            f"Available methods: {available}"
         )
+
+
+def list_quantification_methods() -> dict:
+    """
+    List all available quantification methods.
+
+    Returns
+    -------
+    dict
+        Dictionary mapping method names to their availability status.
+        For optional dependencies, shows whether they are installed.
+
+    Examples
+    --------
+    >>> from mokume.quantification import list_quantification_methods
+    >>> methods = list_quantification_methods()
+    >>> print(methods)
+    {'top3': True, 'topn': True, 'maxlfq': True, 'directlfq': False, 'sum': True}
+    """
+    return {
+        "top3": True,
+        "topn": True,
+        "maxlfq": True,
+        "directlfq": is_directlfq_available(),
+        "sum": True,
+    }

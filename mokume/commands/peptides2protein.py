@@ -10,10 +10,7 @@ import pandas as pd
 from mokume.quantification.ibaq import peptides_to_protein
 from mokume.quantification import (
     get_quantification_method,
-    Top3Quantification,
-    TopNQuantification,
-    MaxLFQQuantification,
-    AllPeptidesQuantification,
+    is_directlfq_available,
 )
 from mokume.model.organism import OrganismDescription
 from mokume.core.constants import (
@@ -28,7 +25,16 @@ from mokume.core.constants import (
 logger = logging.getLogger(__name__)
 
 
-QUANTIFICATION_METHODS = ["ibaq", "top3", "topn", "maxlfq", "sum"]
+# Base methods always available
+QUANTIFICATION_METHODS = ["ibaq", "top3", "topn", "maxlfq", "sum", "directlfq"]
+
+
+def get_available_methods():
+    """Get list of available quantification methods based on installed packages."""
+    methods = ["ibaq", "top3", "topn", "maxlfq", "sum"]
+    if is_directlfq_available():
+        methods.append("directlfq")
+    return methods
 
 
 @click.command("peptides2protein", short_help="Compute protein quantification values")
@@ -47,7 +53,7 @@ QUANTIFICATION_METHODS = ["ibaq", "top3", "topn", "maxlfq", "sum"]
 )
 @click.option(
     "--method",
-    help="Quantification method to use",
+    help="Quantification method to use (directlfq requires: pip install mokume[directlfq])",
     type=click.Choice(QUANTIFICATION_METHODS, case_sensitive=False),
     default="ibaq",
 )
@@ -97,6 +103,18 @@ QUANTIFICATION_METHODS = ["ibaq", "top3", "topn", "maxlfq", "sum"]
     default=3,
     type=int,
 )
+@click.option(
+    "--n_jobs",
+    help="Number of parallel jobs for MaxLFQ (-1 for all cores, default: -1)",
+    default=-1,
+    type=int,
+)
+@click.option(
+    "--min_nonan",
+    help="Minimum non-NaN ion intensities per protein for DirectLFQ (default: 1)",
+    default=1,
+    type=int,
+)
 @click.pass_context
 def peptides2protein(
     click_context,
@@ -116,6 +134,8 @@ def peptides2protein(
     verbose: bool,
     qc_report: str,
     topn_n: int,
+    n_jobs: int,
+    min_nonan: int,
 ) -> None:
     """
     Compute protein quantification values from peptide intensity data.
@@ -124,16 +144,34 @@ def peptides2protein(
     quantification values using various methods:
 
     \b
-    - ibaq: Intensity-Based Absolute Quantification (default)
+    - ibaq: Intensity-Based Absolute Quantification (default, requires FASTA)
     - top3: Average of the 3 most intense peptides
     - topn: Average of the N most intense peptides (use --topn_n)
-    - maxlfq: MaxLFQ delayed normalization algorithm
+    - maxlfq: MaxLFQ delayed normalization algorithm (parallelized)
     - sum: Sum of all peptide intensities
+    - directlfq: DirectLFQ intensity traces (requires: pip install mokume[directlfq])
 
     For the iBAQ method, a FASTA file is required. Other methods can work
     without a FASTA file.
+
+    \b
+    Examples:
+        # Using iBAQ (requires FASTA)
+        mokume peptides2protein --method ibaq -f proteome.fasta -p peptides.csv -o proteins.tsv
+
+        # Using MaxLFQ with 4 parallel jobs
+        mokume peptides2protein --method maxlfq --n_jobs 4 -p peptides.csv -o proteins.tsv
+
+        # Using DirectLFQ (requires optional install)
+        mokume peptides2protein --method directlfq -p peptides.csv -o proteins.tsv
     """
     method_lower = method.lower()
+
+    # Check DirectLFQ availability
+    if method_lower == "directlfq" and not is_directlfq_available():
+        raise click.UsageError(
+            "DirectLFQ is not installed. Install with: pip install mokume[directlfq]"
+        )
 
     if method_lower == "ibaq":
         # Use the existing iBAQ implementation
@@ -158,7 +196,7 @@ def peptides2protein(
         )
     else:
         # Use the generic quantification methods
-        logger.info(f"Using {method} quantification method")
+        click.echo(f"Using {method} quantification method")
 
         # Load peptide data
         if is_parquet(peptides):
@@ -166,9 +204,19 @@ def peptides2protein(
         else:
             peptide_df = pd.read_csv(peptides)
 
-        # Get the quantification method
+        click.echo(f"Loaded {len(peptide_df)} peptide measurements")
+
+        # Get the quantification method with appropriate parameters
         if method_lower == "topn":
             quant_method = get_quantification_method(method, n=topn_n)
+        elif method_lower == "maxlfq":
+            quant_method = get_quantification_method(
+                method, n_jobs=n_jobs, min_peptides=2
+            )
+        elif method_lower == "directlfq":
+            quant_method = get_quantification_method(
+                method, min_nonan=min_nonan
+            )
         else:
             quant_method = get_quantification_method(method)
 
@@ -184,6 +232,7 @@ def peptides2protein(
                 raise click.UsageError(f"Could not find {name} column '{col}' in peptide file")
 
         # Run quantification
+        click.echo(f"Quantifying {peptide_df[protein_col].nunique()} proteins...")
         result_df = quant_method.quantify(
             peptide_df,
             protein_column=protein_col,
@@ -199,10 +248,13 @@ def peptides2protein(
 
         # Normalize if requested
         if normalize:
-            intensity_col_out = result_df.columns[-1]  # The quantification output column
-            result_df[f"{intensity_col_out}Norm"] = result_df.groupby(sample_col)[intensity_col_out].transform(
-                lambda x: x / x.sum()
-            )
+            # Find the intensity column (last column that contains 'Intensity')
+            intensity_cols = [c for c in result_df.columns if 'Intensity' in c]
+            if intensity_cols:
+                intensity_col_out = intensity_cols[-1]
+                result_df[f"{intensity_col_out}Norm"] = result_df.groupby(sample_col)[intensity_col_out].transform(
+                    lambda x: x / x.sum()
+                )
 
         # Save output
         if output:
@@ -210,6 +262,6 @@ def peptides2protein(
                 result_df.to_parquet(output, index=False)
             else:
                 result_df.to_csv(output, sep="\t", index=False)
-            logger.info(f"Results saved to {output}")
+            click.echo(f"Results saved to {output}")
         else:
-            print(result_df.to_string())
+            click.echo(result_df.to_string())
