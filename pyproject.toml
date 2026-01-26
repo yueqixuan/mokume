@@ -47,7 +47,6 @@ qnorm  = "*"
 scipy  = ">=1.10"
 seaborn = ">=0.13.2"
 typing_extensions = ">=4.6.3"
-inmoose = "*"
 anndata = "*"
 
 [tool.poetry.group.dev.dependencies]
@@ -57,10 +56,15 @@ flake8 = "^7.0"
 
 [tool.poetry.extras]
 directlfq = ["directlfq"]
-all = ["directlfq"]
+inmoose = ["inmoose"]
+all = ["directlfq", "inmoose"]
 
 [tool.poetry.dependencies.directlfq]
 version = "^0.6"
+optional = true
+
+[tool.poetry.dependencies.inmoose]
+version = "*"
 optional = true
 
 [tool.poetry.urls]

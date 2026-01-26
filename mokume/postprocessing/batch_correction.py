@@ -1,5 +1,8 @@
 """
 Batch correction utilities for the mokume package.
+
+Note: This module requires the optional 'inmoose' dependency.
+Install it with: pip install mokume[inmoose]
 """
 
 import logging
@@ -21,6 +24,15 @@ from mokume.core.constants import IBAQ_NORMALIZED, SAMPLE_ID, PROTEIN_NAME
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
+
+
+def is_inmoose_available() -> bool:
+    """Check if inmoose is installed."""
+    try:
+        import inmoose
+        return True
+    except ImportError:
+        return False
 
 
 def compute_pca(df, n_components=5) -> pd.DataFrame:
@@ -86,7 +98,43 @@ def apply_batch_correction(
     covs: Optional[List[int]] = None,
     kwargs: Optional[dict] = None,
 ) -> pd.DataFrame:
-    """Apply batch correction using pycombat."""
+    """
+    Apply batch correction using pycombat from inmoose.
+
+    Note: Requires the optional 'inmoose' dependency.
+    Install it with: pip install mokume[inmoose]
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with samples as columns and features as rows.
+    batch : List[int]
+        Batch indices for each sample.
+    covs : Optional[List[int]]
+        Covariate indices for each sample.
+    kwargs : Optional[dict]
+        Additional arguments for pycombat_norm.
+
+    Returns
+    -------
+    pd.DataFrame
+        Batch-corrected DataFrame.
+
+    Raises
+    ------
+    ImportError
+        If inmoose is not installed.
+    ValueError
+        If sample counts don't match batch/covariate counts.
+    TooFewSamplesInBatch
+        If any batch has fewer than 2 samples.
+    """
+    if not is_inmoose_available():
+        raise ImportError(
+            "inmoose is required for batch correction but is not installed. "
+            "Install it with: pip install mokume[inmoose]"
+        )
+
     if kwargs is None:
         kwargs = {}
 

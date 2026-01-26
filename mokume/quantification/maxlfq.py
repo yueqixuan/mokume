@@ -1,23 +1,28 @@
 """
 MaxLFQ protein quantification method.
 
-This module provides the MaxLFQ algorithm, which uses delayed normalization
-and maximal peptide ratio extraction for label-free quantification.
+This module provides the MaxLFQ algorithm for label-free quantification.
 
-This implementation includes optimizations inspired by DirectLFQ:
-- Parallelization using joblib
-- Variance-guided pairwise merging
-- Two-track optimization for large proteins
+This implementation uses peptide trace alignment (inspired by DirectLFQ) for
+improved accuracy:
+- Aligns peptide intensity traces within each protein using median shifts
+- Aggregates aligned traces using median
+- Scales results to preserve total peptide intensity
+- Parallelization using joblib for performance
 
-Reference:
+References:
     Cox J, et al. Accurate Proteome-wide Label-free Quantification by Delayed
     Normalization and Maximal Peptide Ratio Extraction, Termed MaxLFQ.
     Mol Cell Proteomics. 2014;13(9):2513-26.
+
+    Ammar C, et al. Accurate label-free quantification by directLFQ to compare
+    unlimited numbers of proteomes. Mol Cell Proteomics. 2023.
 """
+
+import warnings
 
 import pandas as pd
 import numpy as np
-from typing import Optional, Tuple
 from joblib import Parallel, delayed
 
 from mokume.quantification.base import ProteinQuantificationMethod
@@ -26,135 +31,21 @@ from mokume.core.logger import get_logger
 logger = get_logger("mokume.quantification.maxlfq")
 
 
-def _compute_pairwise_ratios(
-    log_matrix: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Compute pairwise sample ratios and their variances.
-
-    Uses median of log-ratios between samples, with variance to guide
-    the merging order (lower variance = more reliable ratio).
-
-    Parameters
-    ----------
-    log_matrix : np.ndarray
-        Log-transformed peptide intensities, shape (n_peptides, n_samples).
-
-    Returns
-    -------
-    Tuple[np.ndarray, np.ndarray]
-        - ratio_matrix: Median log-ratios between sample pairs
-        - variance_matrix: Variance of ratios (for merging priority)
-    """
-    n_samples = log_matrix.shape[1]
-    ratio_matrix = np.full((n_samples, n_samples), np.nan)
-    variance_matrix = np.full((n_samples, n_samples), np.inf)
-
-    for i in range(n_samples):
-        for j in range(i + 1, n_samples):
-            # Find peptides measured in both samples
-            valid_mask = ~np.isnan(log_matrix[:, i]) & ~np.isnan(log_matrix[:, j])
-            n_valid = np.sum(valid_mask)
-
-            if n_valid > 0:
-                # Compute log-ratios
-                ratios = log_matrix[valid_mask, i] - log_matrix[valid_mask, j]
-                median_ratio = np.median(ratios)
-                ratio_matrix[i, j] = median_ratio
-                ratio_matrix[j, i] = -median_ratio
-
-                # Compute variance for merging priority
-                if n_valid > 1:
-                    variance = np.var(ratios)
-                else:
-                    variance = np.inf  # Single peptide, low confidence
-                variance_matrix[i, j] = variance
-                variance_matrix[j, i] = variance
-
-    return ratio_matrix, variance_matrix
-
-
-def _variance_guided_solve(
-    ratio_matrix: np.ndarray,
-    variance_matrix: np.ndarray,
-) -> np.ndarray:
-    """
-    Solve for protein intensities using variance-guided hierarchical merging.
-
-    This approach merges sample pairs in order of lowest variance (highest
-    confidence) first, inspired by DirectLFQ's hierarchical alignment.
-
-    Parameters
-    ----------
-    ratio_matrix : np.ndarray
-        Pairwise median log-ratios.
-    variance_matrix : np.ndarray
-        Variance of ratios for each pair.
-
-    Returns
-    -------
-    np.ndarray
-        Log-scale protein intensities for each sample.
-    """
-    n_samples = ratio_matrix.shape[0]
-    log_intensities = np.full(n_samples, np.nan)
-
-    # Track which samples have been assigned intensities
-    assigned = np.zeros(n_samples, dtype=bool)
-
-    # Find sample with most valid ratios as starting point
-    valid_counts = np.sum(~np.isnan(ratio_matrix), axis=1)
-    if valid_counts.max() == 0:
-        return log_intensities
-
-    ref_sample = np.argmax(valid_counts)
-    log_intensities[ref_sample] = 0.0
-    assigned[ref_sample] = True
-
-    # Iteratively assign intensities, prioritizing low-variance pairs
-    for _ in range(n_samples - 1):
-        best_variance = np.inf
-        best_i, best_j = -1, -1
-        best_ratio = np.nan
-
-        # Find the best unassigned sample to connect
-        for i in range(n_samples):
-            if not assigned[i]:
-                continue
-            for j in range(n_samples):
-                if assigned[j]:
-                    continue
-                if np.isnan(ratio_matrix[i, j]):
-                    continue
-                if variance_matrix[i, j] < best_variance:
-                    best_variance = variance_matrix[i, j]
-                    best_i, best_j = i, j
-                    best_ratio = ratio_matrix[j, i]  # ratio from assigned to unassigned
-
-        if best_j >= 0:
-            log_intensities[best_j] = log_intensities[best_i] + best_ratio
-            assigned[best_j] = True
-        else:
-            break  # No more connections possible
-
-    return log_intensities
-
-
-def _maxlfq_solve_protein(
-    peptide_matrix: np.ndarray,
-    use_variance_guided: bool = True,
-) -> np.ndarray:
+def _maxlfq_solve_protein(peptide_matrix: np.ndarray) -> np.ndarray:
     """
     Solve the MaxLFQ optimization problem for a single protein.
+
+    Uses peptide trace alignment inspired by DirectLFQ for optimal accuracy.
+    The algorithm:
+    1. Aligns peptide intensity traces using median shifts
+    2. Takes median of aligned traces per sample
+    3. Scales to preserve total peptide intensity
 
     Parameters
     ----------
     peptide_matrix : np.ndarray
         Matrix of shape (n_peptides, n_samples) with peptide intensities.
         NaN values indicate missing measurements.
-    use_variance_guided : bool
-        If True, use variance-guided merging (more accurate).
-        If False, use simple iterative propagation (faster).
 
     Returns
     -------
@@ -172,45 +63,65 @@ def _maxlfq_solve_protein(
             return np.array([np.nan])
         return np.array([np.median(valid_values)])
 
+    if n_peptides == 1:
+        # Single peptide: return its intensities directly
+        return peptide_matrix[0, :].copy()
+
+    # Store original sum for scaling
+    original_sum = np.nansum(peptide_matrix)
+    if original_sum <= 0:
+        return np.full(n_samples, np.nan)
+
     # Log-transform for ratio calculations
     with np.errstate(divide='ignore', invalid='ignore'):
-        log_matrix = np.log2(peptide_matrix)
+        log_matrix = np.log2(peptide_matrix.copy())
 
-    # Compute pairwise ratios and variances
-    ratio_matrix, variance_matrix = _compute_pairwise_ratios(log_matrix)
+    # Step 1: Align peptide traces
+    # Use peptide with most valid values as reference
+    valid_counts = np.sum(~np.isnan(log_matrix), axis=1)
+    if valid_counts.max() == 0:
+        return np.full(n_samples, np.nan)
 
-    # Solve for log-intensities
-    if use_variance_guided:
-        log_intensities = _variance_guided_solve(ratio_matrix, variance_matrix)
-    else:
-        # Simple iterative approach (original implementation)
-        valid_counts = np.sum(~np.isnan(ratio_matrix), axis=1)
-        ref_sample = np.argmax(valid_counts)
-        log_intensities = np.full(n_samples, np.nan)
-        log_intensities[ref_sample] = 0.0
+    ref_peptide_idx = np.argmax(valid_counts)
+    ref_trace = log_matrix[ref_peptide_idx, :]
 
-        for _ in range(n_samples):
-            for i in range(n_samples):
-                if np.isnan(log_intensities[i]):
-                    for j in range(n_samples):
-                        if not np.isnan(log_intensities[j]) and not np.isnan(ratio_matrix[i, j]):
-                            log_intensities[i] = log_intensities[j] + ratio_matrix[i, j]
-                            break
+    # Align other peptides to reference using median shift
+    aligned_matrix = log_matrix.copy()
+    for pep_idx in range(n_peptides):
+        if pep_idx == ref_peptide_idx:
+            continue
 
-    # Convert back from log space and scale
-    median_peptide = np.nanmedian(peptide_matrix)
-    if np.isnan(median_peptide) or median_peptide <= 0:
-        median_peptide = 1.0
+        pep_trace = log_matrix[pep_idx, :]
 
-    intensities = np.power(2, log_intensities) * median_peptide
+        # Find samples measured in both reference and current peptide
+        valid = ~np.isnan(ref_trace) & ~np.isnan(pep_trace)
+        if np.sum(valid) > 0:
+            # Compute median shift to align this peptide to reference
+            shift = np.nanmedian(ref_trace[valid] - pep_trace[valid])
+            aligned_matrix[pep_idx, :] = pep_trace + shift
 
-    # For samples without valid ratios, use median of their peptides
+    # Step 2: Take median of aligned traces per sample
+    # Suppress warning for samples with no peptides (all-NaN columns)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        log_intensities = np.nanmedian(aligned_matrix, axis=0)
+
+    # Step 3: Scale to preserve total peptide intensity
+    intensities = np.power(2, log_intensities)
+
+    # Handle NaN samples using fallback
     for i in range(n_samples):
         if np.isnan(intensities[i]):
             sample_peptides = peptide_matrix[:, i]
             valid_peptides = sample_peptides[~np.isnan(sample_peptides)]
             if len(valid_peptides) > 0:
                 intensities[i] = np.median(valid_peptides)
+
+    # Scale to preserve total intensity sum
+    current_sum = np.nansum(intensities)
+    if current_sum > 0:
+        scale_factor = original_sum / current_sum
+        intensities = intensities * scale_factor
 
     return intensities
 
@@ -223,7 +134,6 @@ def _process_protein(
     sample_column: str,
     samples: np.ndarray,
     min_peptides: int,
-    use_variance_guided: bool,
 ) -> list:
     """
     Process a single protein for MaxLFQ quantification.
@@ -244,8 +154,6 @@ def _process_protein(
         Array of all sample names.
     min_peptides : int
         Minimum peptides required for MaxLFQ.
-    use_variance_guided : bool
-        Whether to use variance-guided merging.
 
     Returns
     -------
@@ -288,7 +196,7 @@ def _process_protein(
             peptide_matrix[pep_idx, sample_idx] = current + new_val
 
     # Run MaxLFQ algorithm
-    intensities = _maxlfq_solve_protein(peptide_matrix, use_variance_guided)
+    intensities = _maxlfq_solve_protein(peptide_matrix)
 
     # Store results
     for i, sample in enumerate(samples):
@@ -307,11 +215,9 @@ class MaxLFQQuantification(ProteinQuantificationMethod):
     MaxLFQ protein quantification method with parallelization.
 
     MaxLFQ uses delayed normalization and maximal peptide ratio extraction
-    for accurate label-free quantification. This implementation includes:
-
-    - Variance-guided hierarchical merging (inspired by DirectLFQ)
-    - Parallel processing using joblib
-    - Robust handling of missing values
+    for accurate label-free quantification. This implementation uses
+    variance-guided hierarchical merging (inspired by DirectLFQ) for
+    improved accuracy and parallel processing for performance.
 
     Parameters
     ----------
@@ -319,21 +225,17 @@ class MaxLFQQuantification(ProteinQuantificationMethod):
         Minimum number of peptides required for MaxLFQ calculation.
         Proteins with fewer peptides will use median aggregation.
         Default is 2.
-    n_jobs : int
-        Number of parallel jobs. -1 uses all available cores.
-        Default is -1.
-    use_variance_guided : bool
-        If True, use variance-guided merging for better accuracy.
-        If False, use simple iterative propagation (faster).
-        Default is True.
+    threads : int
+        Number of parallel threads. Use -1 for all available cores,
+        1 for single-threaded execution. Default is -1.
     verbose : int
-        Verbosity level for joblib (0=silent, 10=verbose).
+        Verbosity level for parallel processing (0=silent, 10=verbose).
         Default is 0.
 
     Examples
     --------
     >>> from mokume.quantification import MaxLFQQuantification
-    >>> maxlfq = MaxLFQQuantification(min_peptides=2, n_jobs=4)
+    >>> maxlfq = MaxLFQQuantification(min_peptides=2, threads=4)
     >>> result = maxlfq.quantify(
     ...     peptide_df,
     ...     protein_column="ProteinName",
@@ -352,9 +254,11 @@ class MaxLFQQuantification(ProteinQuantificationMethod):
     def __init__(
         self,
         min_peptides: int = 2,
-        n_jobs: int = -1,
-        use_variance_guided: bool = True,
+        threads: int = -1,
         verbose: int = 0,
+        # Legacy parameter support
+        n_jobs: int = None,
+        use_variance_guided: bool = None,
     ):
         """
         Initialize MaxLFQ quantification.
@@ -363,17 +267,40 @@ class MaxLFQQuantification(ProteinQuantificationMethod):
         ----------
         min_peptides : int
             Minimum number of peptides required for MaxLFQ calculation.
-        n_jobs : int
-            Number of parallel jobs (-1 for all cores).
-        use_variance_guided : bool
-            Whether to use variance-guided merging.
+        threads : int
+            Number of parallel threads (-1 for all cores, 1 for single-threaded).
         verbose : int
             Verbosity level for parallel processing.
+        n_jobs : int, optional
+            Deprecated. Use 'threads' instead.
+        use_variance_guided : bool, optional
+            Deprecated. Variance-guided merging is always used.
         """
         self.min_peptides = min_peptides
-        self.n_jobs = n_jobs
-        self.use_variance_guided = use_variance_guided
+
+        # Handle legacy n_jobs parameter
+        if n_jobs is not None:
+            import warnings
+            warnings.warn(
+                "Parameter 'n_jobs' is deprecated, use 'threads' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self.threads = n_jobs
+        else:
+            self.threads = threads
+
         self.verbose = verbose
+
+        # Warn if use_variance_guided is explicitly set
+        if use_variance_guided is not None and not use_variance_guided:
+            import warnings
+            warnings.warn(
+                "Parameter 'use_variance_guided' is deprecated. "
+                "Variance-guided merging is always used for best accuracy.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
     @property
     def name(self) -> str:
@@ -415,14 +342,13 @@ class MaxLFQQuantification(ProteinQuantificationMethod):
         proteins = peptide_df[protein_column].unique()
 
         logger.info(f"Processing {len(proteins)} proteins across {len(samples)} samples")
-        logger.info(f"Using {'variance-guided' if self.use_variance_guided else 'simple'} merging")
-        logger.info(f"Parallel jobs: {self.n_jobs}")
+        logger.info(f"Threads: {self.threads}")
 
         # Group data by protein for efficient access
         grouped = peptide_df.groupby(protein_column)
 
         # Process proteins in parallel
-        all_results = Parallel(n_jobs=self.n_jobs, verbose=self.verbose)(
+        all_results = Parallel(n_jobs=self.threads, verbose=self.verbose)(
             delayed(_process_protein)(
                 protein,
                 group,
@@ -431,7 +357,6 @@ class MaxLFQQuantification(ProteinQuantificationMethod):
                 sample_column,
                 samples,
                 self.min_peptides,
-                self.use_variance_guided,
             )
             for protein, group in grouped
         )

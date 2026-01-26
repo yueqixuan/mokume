@@ -5,6 +5,9 @@ import anndata
 
 import pandas as pd
 
+# Skip tests if inmoose is not installed (required for batch correction)
+pytest.importorskip("inmoose", reason="inmoose is required for batch correction")
+
 from mokume.commands.batch_correct import run_batch_correction
 from mokume.core.constants import SAMPLE_ID, PROTEIN_NAME, IBAQ, IBAQ_BEC
 

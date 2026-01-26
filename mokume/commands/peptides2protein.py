@@ -104,8 +104,8 @@ def get_available_methods():
     type=int,
 )
 @click.option(
-    "--n_jobs",
-    help="Number of parallel jobs for MaxLFQ (-1 for all cores, default: -1)",
+    "--threads",
+    help="Number of parallel threads for MaxLFQ (-1 for all cores, default: -1)",
     default=-1,
     type=int,
 )
@@ -134,7 +134,7 @@ def peptides2protein(
     verbose: bool,
     qc_report: str,
     topn_n: int,
-    n_jobs: int,
+    threads: int,
     min_nonan: int,
 ) -> None:
     """
@@ -159,8 +159,8 @@ def peptides2protein(
         # Using iBAQ (requires FASTA)
         mokume peptides2protein --method ibaq -f proteome.fasta -p peptides.csv -o proteins.tsv
 
-        # Using MaxLFQ with 4 parallel jobs
-        mokume peptides2protein --method maxlfq --n_jobs 4 -p peptides.csv -o proteins.tsv
+        # Using MaxLFQ with 4 threads
+        mokume peptides2protein --method maxlfq --threads 4 -p peptides.csv -o proteins.tsv
 
         # Using DirectLFQ (requires optional install)
         mokume peptides2protein --method directlfq -p peptides.csv -o proteins.tsv
@@ -211,7 +211,7 @@ def peptides2protein(
             quant_method = get_quantification_method(method, n=topn_n)
         elif method_lower == "maxlfq":
             quant_method = get_quantification_method(
-                method, n_jobs=n_jobs, min_peptides=2
+                method, threads=threads, min_peptides=2
             )
         elif method_lower == "directlfq":
             quant_method = get_quantification_method(

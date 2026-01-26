@@ -209,3 +209,6 @@ __marimo__/
 
 #Ignore cursor AI rules
 .cursor/rules/codacy.mdc
+
+# Test data downloaded from PRIDE (large files)
+tests/data/pride_cache/

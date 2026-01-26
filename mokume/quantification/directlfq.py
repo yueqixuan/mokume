@@ -295,15 +295,23 @@ class DirectLFQQuantification(ProteinQuantificationMethod):
                 raise RuntimeError(f"DirectLFQ quantification failed: {e}")
 
             # Find and parse output file
-            output_path = input_path.replace('.tsv', '.protein_intensities.tsv')
-            if not os.path.exists(output_path):
-                # Try alternative naming
-                base_path = input_path.rsplit('.', 1)[0]
-                output_path = f"{base_path}.protein_intensities.tsv"
+            # DirectLFQ may use different naming conventions, search for the output
+            import glob
+            possible_outputs = glob.glob(os.path.join(temp_dir, "*protein_intensities*.tsv"))
+
+            if not possible_outputs:
+                # Try the expected naming patterns
+                output_path = input_path.replace('.tsv', '.protein_intensities.tsv')
+                if not os.path.exists(output_path):
+                    base_path = input_path.rsplit('.', 1)[0]
+                    output_path = f"{base_path}.protein_intensities.tsv"
+            else:
+                output_path = possible_outputs[0]
 
             if not os.path.exists(output_path):
                 raise FileNotFoundError(
-                    f"DirectLFQ output not found. Expected: {output_path}"
+                    f"DirectLFQ output not found in {temp_dir}. "
+                    f"Files present: {os.listdir(temp_dir)}"
                 )
 
             logger.info(f"Parsing DirectLFQ output: {output_path}")
