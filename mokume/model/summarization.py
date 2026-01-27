@@ -6,9 +6,7 @@ used when aggregating peptide intensities to protein levels.
 """
 
 from enum import Enum, auto
-from typing import Callable
 
-import numpy as np
 import pandas as pd
 
 

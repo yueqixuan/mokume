@@ -7,7 +7,6 @@ across technical replicates and samples.
 
 import pandas as pd
 
-from mokume.core.constants import NORM_INTENSITY, SAMPLE_ID, TECHREPLICATE
 from mokume.model.normalization import FeatureNormalizationMethod
 
 

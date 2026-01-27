@@ -7,7 +7,6 @@ throughout the package for data processing and analysis.
 
 import os
 
-import matplotlib
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -50,6 +49,10 @@ WEIGHT_NG = "Weight[ng]"
 MOLES_NMOL = "Moles[nmol]"
 GLOBALMEDIAN = "globalMedian"
 CONDITIONMEDIAN = "conditionMedian"
+
+# Aggregation level constants
+AGGREGATION_LEVEL_SAMPLE = "sample"
+AGGREGATION_LEVEL_RUN = "run"
 
 
 # Parquet column names (QPX compatible)

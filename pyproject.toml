@@ -76,6 +76,17 @@ LICENSE = "https://github.com/bigbio/mokume/blob/main/LICENSE"
 [tool.poetry.scripts]
 mokume = "mokume.mokume_cli:main"
 
+[tool.pytest.ini_options]
+# Show print output during tests (needed for quantification comparison tables)
+addopts = "-v -s --tb=short"
+# Test paths
+testpaths = ["tests"]
+# Markers for test categorization
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "comparison: marks tests that print comparison tables",
+]
+
 [tool.isort]
 profile = "black"
 

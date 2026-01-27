@@ -6,19 +6,10 @@ import logging
 import os
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from mokume.core.constants import load_feature, load_sdrf
-from mokume.imputation.methods import impute_missing_values
-from mokume.postprocessing.batch_correction import (
-    compute_pca,
-    get_batch_info_from_sample_names,
-    remove_single_sample_batches,
-    apply_batch_correction,
-    iterative_outlier_removal,
-    plot_pca,
-)
+from mokume.postprocessing.batch_correction import get_batch_info_from_sample_names
 
 logging.basicConfig(format="%(asctime)s [%(funcName)s] - %(message)s", level=logging.DEBUG)
 logger = logging.getLogger(__name__)

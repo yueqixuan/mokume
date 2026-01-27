@@ -5,9 +5,17 @@ This module provides the TopN quantification method, which calculates
 protein abundance as the average of the N most intense peptides.
 """
 
+from typing import Optional
+
 import pandas as pd
 
 from mokume.quantification.base import ProteinQuantificationMethod
+from mokume.core.constants import (
+    PROTEIN_NAME,
+    PEPTIDE_CANONICAL,
+    NORM_INTENSITY,
+    SAMPLE_ID,
+)
 
 
 class TopNQuantification(ProteinQuantificationMethod):
@@ -15,7 +23,7 @@ class TopNQuantification(ProteinQuantificationMethod):
     TopN protein quantification method.
 
     Calculates protein abundance as the average of the N most intense
-    peptides for each protein in each sample.
+    peptides for each protein in each sample (or run if run_column is provided).
     """
 
     def __init__(self, n: int = 3):
@@ -36,10 +44,11 @@ class TopNQuantification(ProteinQuantificationMethod):
     def quantify(
         self,
         peptide_df: pd.DataFrame,
-        protein_column: str = "ProteinName",
-        peptide_column: str = "PeptideCanonical",
-        intensity_column: str = "NormIntensity",
-        sample_column: str = "SampleID",
+        protein_column: str = PROTEIN_NAME,
+        peptide_column: str = PEPTIDE_CANONICAL,
+        intensity_column: str = NORM_INTENSITY,
+        sample_column: str = SAMPLE_ID,
+        run_column: Optional[str] = None,
     ) -> pd.DataFrame:
         """
         Quantify proteins using the TopN method.
@@ -56,20 +65,32 @@ class TopNQuantification(ProteinQuantificationMethod):
             Column name for intensity values.
         sample_column : str
             Column name for sample identifiers.
+        run_column : str, optional
+            Column name for run identifiers. If provided, quantification
+            is performed at the run level instead of sample level.
 
         Returns
         -------
         pd.DataFrame
-            DataFrame with columns: protein_column, sample_column, 'TopNIntensity'.
+            DataFrame with columns: protein_column, sample_column,
+            (run_column if provided), 'TopNIntensity'.
         """
-        # Sort by intensity and take top N per protein per sample
+        # Determine grouping columns based on aggregation level
+        if run_column is not None and run_column in peptide_df.columns:
+            group_cols = [protein_column, sample_column, run_column]
+        else:
+            group_cols = [protein_column, sample_column]
+
+        # Sort by intensity and take top N per protein per group
         result = (
             peptide_df.sort_values(intensity_column, ascending=False)
-            .groupby([protein_column, sample_column])
+            .groupby(group_cols)
             .head(self.n)
-            .groupby([protein_column, sample_column])[intensity_column]
+            .groupby(group_cols)[intensity_column]
             .mean()
             .reset_index()
         )
-        result.columns = [protein_column, sample_column, f"Top{self.n}Intensity"]
+
+        # Rename intensity column
+        result = result.rename(columns={intensity_column: f"Top{self.n}Intensity"})
         return result

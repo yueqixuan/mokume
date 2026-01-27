@@ -32,6 +32,8 @@ from mokume.core.constants import (
     SAMPLE_ID,
     PARQUET_COLUMNS,
     parquet_map,
+    AGGREGATION_LEVEL_SAMPLE,
+    AGGREGATION_LEVEL_RUN,
 )
 
 from mokume.core.write_queue import WriteParquetTask, WriteCSVTask
@@ -198,7 +200,11 @@ def reformat_quantms_feature_table_quant_labels(
     return data_df
 
 
-def apply_initial_filtering(data_df: pd.DataFrame, min_aa: int) -> pd.DataFrame:
+def apply_initial_filtering(
+    data_df: pd.DataFrame,
+    min_aa: int,
+    aggregation_level: str = AGGREGATION_LEVEL_SAMPLE,
+) -> pd.DataFrame:
     """
     Apply initial filtering to a DataFrame containing peptide data.
 
@@ -208,6 +214,10 @@ def apply_initial_filtering(data_df: pd.DataFrame, min_aa: int) -> pd.DataFrame:
         The input DataFrame containing peptide data.
     min_aa : int
         The minimum number of amino acids required for peptides.
+    aggregation_level : str
+        Level at which to aggregate intensities. Options:
+        - "sample": Aggregate at sample level (default)
+        - "run": Aggregate at run level, preserving run information
 
     Returns
     -------
@@ -244,20 +254,25 @@ def apply_initial_filtering(data_df: pd.DataFrame, min_aa: int) -> pd.DataFrame:
     else:
         data_df[TECHREPLICATE] = data_df[RUN].astype("int")
 
-    data_df = data_df[
-        [
-            PROTEIN_NAME,
-            PEPTIDE_SEQUENCE,
-            PEPTIDE_CANONICAL,
-            PEPTIDE_CHARGE,
-            INTENSITY,
-            CONDITION,
-            TECHREPLICATE,
-            BIOREPLICATE,
-            FRACTION,
-            SAMPLE_ID,
-        ]
+    # Define columns to keep based on aggregation level
+    columns_to_keep = [
+        PROTEIN_NAME,
+        PEPTIDE_SEQUENCE,
+        PEPTIDE_CANONICAL,
+        PEPTIDE_CHARGE,
+        INTENSITY,
+        CONDITION,
+        TECHREPLICATE,
+        BIOREPLICATE,
+        FRACTION,
+        SAMPLE_ID,
     ]
+
+    # Include RUN column for run-level aggregation
+    if aggregation_level == AGGREGATION_LEVEL_RUN:
+        columns_to_keep.append(RUN)
+
+    data_df = data_df[columns_to_keep]
     data_df[CONDITION] = pd.Categorical(data_df[CONDITION])
     data_df[SAMPLE_ID] = pd.Categorical(data_df[SAMPLE_ID])
 
@@ -326,7 +341,10 @@ def get_peptidoform_normalize_intensities(
     return dataset
 
 
-def sum_peptidoform_intensities(dataset: pd.DataFrame) -> pd.DataFrame:
+def sum_peptidoform_intensities(
+    dataset: pd.DataFrame,
+    aggregation_level: str = AGGREGATION_LEVEL_SAMPLE,
+) -> pd.DataFrame:
     """
     Aggregate normalized intensities for each unique peptidoform.
 
@@ -334,6 +352,10 @@ def sum_peptidoform_intensities(dataset: pd.DataFrame) -> pd.DataFrame:
     ----------
     dataset : pd.DataFrame
         The input DataFrame containing peptidoform data with normalized intensities.
+    aggregation_level : str
+        Level at which to aggregate intensities. Options:
+        - "sample": Aggregate at sample level (default, original behavior)
+        - "run": Aggregate at run level, preserving run information
 
     Returns
     -------
@@ -341,18 +363,38 @@ def sum_peptidoform_intensities(dataset: pd.DataFrame) -> pd.DataFrame:
         A DataFrame with summed normalized intensities for each unique peptidoform entry.
     """
     dataset.dropna(subset=[NORM_INTENSITY], inplace=True)
-    dataset = dataset[
-        [
-            PROTEIN_NAME,
-            PEPTIDE_CANONICAL,
-            SAMPLE_ID,
-            BIOREPLICATE,
-            CONDITION,
-            NORM_INTENSITY,
-        ]
+
+    # Define columns based on aggregation level
+    base_columns = [
+        PROTEIN_NAME,
+        PEPTIDE_CANONICAL,
+        SAMPLE_ID,
+        BIOREPLICATE,
+        CONDITION,
+        NORM_INTENSITY,
     ]
+
+    groupby_columns = [
+        PROTEIN_NAME,
+        PEPTIDE_CANONICAL,
+        SAMPLE_ID,
+        BIOREPLICATE,
+        CONDITION,
+    ]
+
+    # If run-level aggregation, include RUN/TECHREPLICATE columns
+    if aggregation_level == AGGREGATION_LEVEL_RUN:
+        if RUN in dataset.columns:
+            base_columns.insert(-1, RUN)
+            groupby_columns.append(RUN)
+        if TECHREPLICATE in dataset.columns:
+            base_columns.insert(-1, TECHREPLICATE)
+            groupby_columns.append(TECHREPLICATE)
+
+    dataset = dataset[[c for c in base_columns if c in dataset.columns]]
+
     dataset.loc[:, NORM_INTENSITY] = dataset.groupby(
-        [PROTEIN_NAME, PEPTIDE_CANONICAL, SAMPLE_ID, BIOREPLICATE, CONDITION],
+        [c for c in groupby_columns if c in dataset.columns],
         observed=True,
     )[NORM_INTENSITY].transform("sum")
     dataset = dataset.drop_duplicates()
@@ -551,6 +593,7 @@ def peptide_normalization(
     irs_autodetect_regex: str = None,
     irs_stat: str = "median",
     irs_scope: str = "global",
+    aggregation_level: str = AGGREGATION_LEVEL_SAMPLE,
 ) -> None:
     """
     Perform peptide normalization on a proteomics dataset.
@@ -591,6 +634,13 @@ def peptide_normalization(
         Statistic for IRS per-run metric (median or mean).
     irs_scope : str, optional
         IRS scaling scope (global, by_mixture, or two_stage).
+    aggregation_level : str, optional
+        Level at which to aggregate intensities. Options:
+        - "sample": Aggregate at sample level (default, original behavior)
+        - "run": Aggregate at run level, preserving run information for
+          downstream quantification. This is useful when you want to perform
+          quantification (e.g., MaxLFQ) at the run level first, similar to
+          DIA-NN's approach.
     """
 
     if os.path.exists(output):
@@ -698,7 +748,7 @@ def peptide_normalization(
 
             dataset_df = reformat_quantms_feature_table_quant_labels(dataset_df, label, choice)
 
-            dataset_df = apply_initial_filtering(dataset_df, min_aa)
+            dataset_df = apply_initial_filtering(dataset_df, min_aa, aggregation_level)
 
             dataset_df = dataset_df.groupby(PROTEIN_NAME).filter(
                 lambda x: len(set(x[PEPTIDE_CANONICAL])) >= min_unique
@@ -776,8 +826,8 @@ def peptide_normalization(
                 )
 
             start_time = time.time()
-            logger.info("%s: Summing all peptidoforms per sample...", str(sample).upper())
-            dataset_df = sum_peptidoform_intensities(dataset_df)
+            logger.info("%s: Summing all peptidoforms per %s...", str(sample).upper(), aggregation_level)
+            dataset_df = sum_peptidoform_intensities(dataset_df, aggregation_level)
             elapsed = time.time() - start_time
             logger.info(
                 "%s: Number of peptides after selection: %d (completed in %.2f seconds)",

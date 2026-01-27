@@ -5,10 +5,12 @@ This module provides implementations for various summarization strategies
 used when aggregating peptide intensities to protein levels.
 """
 
-from mokume.summarization.base import SummarizationStrategy
-from mokume.summarization.median import MedianSummarization
-from mokume.summarization.mean import MeanSummarization
-from mokume.summarization.sum import SumSummarization
+from mokume.summarization.base import (
+    SummarizationStrategy,
+    MedianSummarization,
+    MeanSummarization,
+    SumSummarization,
+)
 
 __all__ = [
     "SummarizationStrategy",

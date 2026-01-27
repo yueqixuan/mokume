@@ -7,7 +7,7 @@ This module provides functions for normalizing protein-level intensities.
 import pandas as pd
 import numpy as np
 
-from mokume.core.constants import PROTEIN_NAME, SAMPLE_ID, NORM_INTENSITY
+from mokume.core.constants import NORM_INTENSITY
 
 
 def quantile_normalize(df: pd.DataFrame, value_column: str = NORM_INTENSITY) -> pd.DataFrame:

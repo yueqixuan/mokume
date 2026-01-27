@@ -10,6 +10,13 @@ from typing import Optional
 
 import pandas as pd
 
+from mokume.core.constants import (
+    PROTEIN_NAME,
+    PEPTIDE_CANONICAL,
+    NORM_INTENSITY,
+    SAMPLE_ID,
+)
+
 
 class ProteinQuantificationMethod(ABC):
     """
@@ -29,10 +36,11 @@ class ProteinQuantificationMethod(ABC):
     def quantify(
         self,
         peptide_df: pd.DataFrame,
-        protein_column: str = "ProteinName",
-        peptide_column: str = "PeptideCanonical",
-        intensity_column: str = "NormIntensity",
-        sample_column: str = "SampleID",
+        protein_column: str = PROTEIN_NAME,
+        peptide_column: str = PEPTIDE_CANONICAL,
+        intensity_column: str = NORM_INTENSITY,
+        sample_column: str = SAMPLE_ID,
+        run_column: Optional[str] = None,
     ) -> pd.DataFrame:
         """
         Quantify proteins from peptide intensities.
@@ -49,13 +57,40 @@ class ProteinQuantificationMethod(ABC):
             Column name for intensity values.
         sample_column : str
             Column name for sample identifiers.
+        run_column : str, optional
+            Column name for run identifiers. If provided, quantification
+            is performed at the run level instead of sample level.
+            This enables run-level aggregation similar to DIA-NN's approach.
 
         Returns
         -------
         pd.DataFrame
             DataFrame containing protein-level quantification values.
+            If run_column is provided, the result will contain both
+            sample and run identifiers.
         """
         pass
+
+    def _get_grouping_column(
+        self, sample_column: str, run_column: Optional[str] = None
+    ) -> str:
+        """
+        Get the column to use for grouping based on aggregation level.
+
+        Parameters
+        ----------
+        sample_column : str
+            Column name for sample identifiers.
+        run_column : str, optional
+            Column name for run identifiers.
+
+        Returns
+        -------
+        str
+            The column name to use for grouping (run_column if provided,
+            otherwise sample_column).
+        """
+        return run_column if run_column is not None else sample_column
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}()"

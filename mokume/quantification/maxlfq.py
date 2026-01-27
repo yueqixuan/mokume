@@ -35,6 +35,12 @@ from joblib import Parallel, delayed
 
 from mokume.quantification.base import ProteinQuantificationMethod
 from mokume.core.logger import get_logger
+from mokume.core.constants import (
+    PROTEIN_NAME,
+    PEPTIDE_CANONICAL,
+    NORM_INTENSITY,
+    SAMPLE_ID,
+)
 
 logger = get_logger("mokume.quantification.maxlfq")
 
@@ -151,6 +157,7 @@ def _process_protein(
     sample_column: str,
     samples: np.ndarray,
     min_peptides: int,
+    run_column: Optional[str] = None,
 ) -> list:
     """
     Process a single protein for MaxLFQ quantification (built-in fallback).
@@ -449,10 +456,11 @@ class MaxLFQQuantification(ProteinQuantificationMethod):
     def quantify(
         self,
         peptide_df: pd.DataFrame,
-        protein_column: str = "ProteinName",
-        peptide_column: str = "PeptideCanonical",
-        intensity_column: str = "NormIntensity",
-        sample_column: str = "SampleID",
+        protein_column: str = PROTEIN_NAME,
+        peptide_column: str = PEPTIDE_CANONICAL,
+        intensity_column: str = NORM_INTENSITY,
+        sample_column: str = SAMPLE_ID,
+        run_column: Optional[str] = None,
     ) -> pd.DataFrame:
         """
         Quantify proteins using the MaxLFQ algorithm.
@@ -473,15 +481,33 @@ class MaxLFQQuantification(ProteinQuantificationMethod):
             Column name for intensity values.
         sample_column : str
             Column name for sample identifiers.
+        run_column : str, optional
+            Column name for run identifiers. If provided, quantification
+            is performed at the run level instead of sample level.
+            Note: DirectLFQ delegation does not support run_column yet,
+            so the built-in implementation will be used when run_column is provided.
 
         Returns
         -------
         pd.DataFrame
-            DataFrame with columns: protein_column, sample_column, 'MaxLFQIntensity'.
+            DataFrame with columns: protein_column, sample_column,
+            (run_column if provided), 'MaxLFQIntensity'.
         """
         logger.info(f"Running MaxLFQ quantification ({self.name})")
 
-        if self.using_directlfq:
+        # If run_column is provided, use built-in implementation
+        # DirectLFQ delegation doesn't support run-level aggregation yet
+        if run_column is not None and run_column in peptide_df.columns:
+            logger.info("Using built-in implementation for run-level quantification")
+            result_df = self._quantify_builtin_with_runs(
+                peptide_df,
+                protein_column,
+                peptide_column,
+                intensity_column,
+                sample_column,
+                run_column,
+            )
+        elif self.using_directlfq:
             result_df = self._quantify_with_directlfq(
                 peptide_df,
                 protein_column,
@@ -501,5 +527,72 @@ class MaxLFQQuantification(ProteinQuantificationMethod):
         n_proteins = result_df[protein_column].nunique() if len(result_df) > 0 else 0
         n_samples = result_df[sample_column].nunique() if len(result_df) > 0 else 0
         logger.info(f"MaxLFQ complete: {n_proteins} proteins, {n_samples} samples")
+
+        return result_df
+
+    def _quantify_builtin_with_runs(
+        self,
+        peptide_df: pd.DataFrame,
+        protein_column: str,
+        peptide_column: str,
+        intensity_column: str,
+        sample_column: str,
+        run_column: str,
+    ) -> pd.DataFrame:
+        """
+        Run quantification at run level using built-in implementation.
+
+        This processes each (sample, run) combination separately, similar
+        to how DIA-NN performs MaxLFQ at the run level.
+        """
+        # Create a combined grouping column for sample+run
+        # Use a separator unlikely to appear in sample/run names
+        sep = "|||"
+        peptide_df = peptide_df.copy()
+        peptide_df['_sample_run'] = peptide_df[sample_column].astype(str) + sep + peptide_df[run_column].astype(str)
+
+        # Get unique sample-run combinations
+        sample_runs = peptide_df['_sample_run'].unique()
+        proteins = peptide_df[protein_column].unique()
+
+        logger.info(f"Processing {len(proteins)} proteins across {len(sample_runs)} sample-run combinations")
+        logger.info(f"Threads: {self.threads}")
+
+        # Group data by protein for efficient access
+        grouped = peptide_df.groupby(protein_column)
+
+        # Process proteins in parallel
+        all_results = Parallel(n_jobs=self.threads, verbose=self.verbose)(
+            delayed(_process_protein)(
+                protein,
+                group,
+                peptide_column,
+                intensity_column,
+                '_sample_run',  # Use combined column for grouping
+                sample_runs,
+                self.min_peptides,
+            )
+            for protein, group in grouped
+        )
+
+        # Flatten results
+        results = []
+        for protein_results in all_results:
+            results.extend(protein_results)
+
+        # Create result DataFrame
+        result_df = pd.DataFrame(results)
+
+        if len(result_df) > 0:
+            # Split sample_run back into sample and run using the same separator
+            # Use regex=False to treat separator as literal string
+            result_df[[sample_column, run_column]] = result_df['sample'].str.split(
+                sep, n=1, expand=True, regex=False
+            )
+            result_df = result_df.drop(columns=['sample'])
+            result_df = result_df.rename(columns={
+                'protein': protein_column,
+                'intensity': 'MaxLFQIntensity',
+            })
 
         return result_df

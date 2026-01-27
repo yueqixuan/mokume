@@ -14,14 +14,18 @@ Reference:
 
 import tempfile
 import os
-from pathlib import Path
 
 import pandas as pd
-import numpy as np
 from typing import Optional
 
 from mokume.quantification.base import ProteinQuantificationMethod
 from mokume.core.logger import get_logger
+from mokume.core.constants import (
+    PROTEIN_NAME,
+    PEPTIDE_CANONICAL,
+    NORM_INTENSITY,
+    SAMPLE_ID,
+)
 
 logger = get_logger("mokume.quantification.directlfq")
 
@@ -235,10 +239,11 @@ class DirectLFQQuantification(ProteinQuantificationMethod):
     def quantify(
         self,
         peptide_df: pd.DataFrame,
-        protein_column: str = "ProteinName",
-        peptide_column: str = "PeptideCanonical",
-        intensity_column: str = "NormIntensity",
-        sample_column: str = "SampleID",
+        protein_column: str = PROTEIN_NAME,
+        peptide_column: str = PEPTIDE_CANONICAL,
+        intensity_column: str = NORM_INTENSITY,
+        sample_column: str = SAMPLE_ID,
+        run_column: Optional[str] = None,
     ) -> pd.DataFrame:
         """
         Quantify proteins using DirectLFQ algorithm.

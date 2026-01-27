@@ -96,6 +96,13 @@ from mokume.model.normalization import FeatureNormalizationMethod, PeptideNormal
     type=click.Choice(["global", "by_mixture", "two_stage"], case_sensitive=False),
     default="global",
 )
+@click.option(
+    "--aggregation_level",
+    help="Level at which to aggregate intensities: 'sample' (default) aggregates runs to samples, "
+         "'run' preserves run-level granularity for downstream quantification (similar to DIA-NN)",
+    type=click.Choice(["sample", "run"], case_sensitive=False),
+    default="sample",
+)
 @click.pass_context
 def features2parquet(
     ctx,
@@ -116,6 +123,7 @@ def features2parquet(
     irs_autodetect_regex: str,
     irs_stat: str,
     irs_scope: str,
+    aggregation_level: str,
 ) -> None:
     """
     Convert feature data to a parquet file with optional normalization and filtering steps.
@@ -138,4 +146,5 @@ def features2parquet(
         irs_autodetect_regex=irs_autodetect_regex,
         irs_stat=irs_stat,
         irs_scope=irs_scope,
+        aggregation_level=aggregation_level,
     )

@@ -20,8 +20,6 @@ warnings.filterwarnings(
 from sklearn.cluster._hdbscan import hdbscan
 from sklearn.decomposition import PCA
 
-from mokume.core.constants import IBAQ_NORMALIZED, SAMPLE_ID, PROTEIN_NAME
-
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
