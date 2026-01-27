@@ -60,7 +60,7 @@ inmoose = ["inmoose"]
 all = ["directlfq", "inmoose"]
 
 [tool.poetry.dependencies.directlfq]
-version = "^0.6"
+version = ">=0.3.0"
 optional = true
 
 [tool.poetry.dependencies.inmoose]
