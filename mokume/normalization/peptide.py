@@ -322,11 +322,19 @@ def apply_initial_filtering(
     if FRACTION not in data_df.columns:
         data_df[FRACTION] = 1
 
-    if data_df[RUN].str.contains("_").all():
-        data_df[TECHREPLICATE] = data_df[RUN].str.split("_").str.get(1)
-        data_df[TECHREPLICATE] = data_df[TECHREPLICATE].astype("int")
-    else:
-        data_df[TECHREPLICATE] = data_df[RUN].astype("int")
+    # Try to extract technical replicate from run name
+    try:
+        if data_df[RUN].str.contains("_").all():
+            # Get the last part after underscore (e.g., "S1_Brain_2" -> "2")
+            last_parts = data_df[RUN].str.split("_").str.get(-1)
+            data_df[TECHREPLICATE] = last_parts.astype("int")
+        else:
+            data_df[TECHREPLICATE] = data_df[RUN].astype("int")
+    except (ValueError, TypeError):
+        # Fall back to using run index
+        unique_runs = data_df[RUN].unique().tolist()
+        run_to_index = {run: i + 1 for i, run in enumerate(unique_runs)}
+        data_df[TECHREPLICATE] = data_df[RUN].map(run_to_index)
 
     # Define columns to keep based on aggregation level
     columns_to_keep = [
@@ -481,6 +489,9 @@ class Feature:
     Represents a feature in a proteomics dataset, providing methods for data manipulation
     and analysis using a DuckDB database connection to a Parquet file.
 
+    This class expects the quantms.io/qpx wide format where intensities are stored
+    in a nested array: intensities[{sample_accession, channel, intensity}, ...]
+
     Attributes
     ----------
     filter_builder : Optional[SQLFilterBuilder]
@@ -500,13 +511,120 @@ class Feature:
     ):
         if os.path.exists(database_path):
             self.parquet_db = duckdb.connect()
-            self.parquet_db = self.parquet_db.execute(
-                "CREATE VIEW parquet_db AS SELECT * FROM parquet_scan('{}')".format(database_path)
+
+            # Create raw view from parquet
+            self.parquet_db.execute(
+                "CREATE VIEW parquet_db_raw AS SELECT * FROM parquet_scan('{}')".format(
+                    database_path
+                )
             )
+
+            # UNNEST intensities array to create long format view
+            # This converts the wide format (nested intensities) to long format
+            self.parquet_db.execute("""
+                CREATE VIEW parquet_db AS
+                SELECT
+                    sequence,
+                    peptidoform,
+                    pg_accessions,
+                    precursor_charge,
+                    reference_file_name,
+                    "unique",
+                    unnest.sample_accession,
+                    unnest.channel,
+                    unnest.intensity,
+                    -- Defaults (can be enriched with SDRF later)
+                    reference_file_name as run,
+                    unnest.sample_accession as condition,
+                    1 as biological_replicate,
+                    '1' as fraction
+                FROM parquet_db_raw, UNNEST(intensities) as unnest
+                WHERE unnest.intensity IS NOT NULL AND unnest.intensity > 0
+            """)
+
             self.samples = self.get_unique_samples()
             self.filter_builder = filter_builder
         else:
             raise FileNotFoundError(f"the file {database_path} does not exist.")
+
+    def enrich_with_sdrf(self, sdrf_path: str) -> None:
+        """Enrich parquet data with SDRF metadata (condition, biological_replicate, etc.).
+
+        Parameters
+        ----------
+        sdrf_path : str
+            Path to the SDRF file containing sample metadata.
+        """
+        sdrf_df = pd.read_csv(sdrf_path, sep="\t")
+        sdrf_df.columns = [c.lower() for c in sdrf_df.columns]
+
+        # Find the condition column (try factor value first, then characteristics)
+        condition_col = None
+        for col in sdrf_df.columns:
+            if 'factor value' in col:
+                condition_col = col
+                break
+        if condition_col is None:
+            for col in sdrf_df.columns:
+                if 'organism part' in col and 'characteristics' in col:
+                    condition_col = col
+                    break
+
+        # Prepare SDRF mapping
+        sdrf_mapping = pd.DataFrame({
+            'sdrf_sample_accession': sdrf_df['source name'],
+            'sdrf_condition': (
+                sdrf_df[condition_col] if condition_col else sdrf_df['source name']
+            ),
+            'sdrf_biological_replicate': sdrf_df.get(
+                'characteristics[biological replicate]', 1
+            ),
+            'sdrf_fraction': sdrf_df.get('comment[fraction identifier]', '1'),
+        })
+
+        self.parquet_db.register('sdrf_mapping', sdrf_mapping)
+
+        # Create intermediate view for unnested data
+        self.parquet_db.execute("""
+            CREATE OR REPLACE VIEW parquet_db_unnested AS
+            SELECT
+                sequence,
+                peptidoform,
+                pg_accessions,
+                precursor_charge,
+                reference_file_name,
+                "unique",
+                unnest.sample_accession,
+                unnest.channel,
+                unnest.intensity,
+                reference_file_name as run
+            FROM parquet_db_raw, UNNEST(intensities) as unnest
+            WHERE unnest.intensity IS NOT NULL AND unnest.intensity > 0
+        """)
+
+        # Recreate main view with SDRF data joined
+        self.parquet_db.execute("DROP VIEW IF EXISTS parquet_db")
+        self.parquet_db.execute("""
+            CREATE VIEW parquet_db AS
+            SELECT
+                p.sequence,
+                p.peptidoform,
+                p.pg_accessions,
+                p.precursor_charge,
+                p.reference_file_name,
+                p."unique",
+                p.sample_accession,
+                p.channel,
+                p.intensity,
+                p.run,
+                COALESCE(s.sdrf_condition, p.sample_accession) as condition,
+                COALESCE(CAST(s.sdrf_biological_replicate AS INTEGER), 1) as biological_replicate,
+                COALESCE(CAST(s.sdrf_fraction AS VARCHAR), '1') as fraction
+            FROM parquet_db_unnested p
+            LEFT JOIN sdrf_mapping s ON p.sample_accession = s.sdrf_sample_accession
+        """)
+
+        logger.info("Enriched parquet data with SDRF metadata from %s", sdrf_path)
 
     @staticmethod
     def standardize_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -613,18 +731,27 @@ class Feature:
         return unique["channel"].tolist()
 
     def get_unique_tec_reps(self) -> list[int]:
-        """Retrieves a list of unique technical repetition identifiers."""
+        """Retrieves a list of unique technical repetition identifiers.
+
+        Attempts to extract technical replicate numbers from run names in order:
+        1. If run name contains '_', try to extract the last part as an integer
+        2. If run name is numeric, use it directly
+        3. Fall back to sequential integers (1, 2, 3, ...) based on unique runs
+        """
         unique = self.parquet_db.sql("SELECT DISTINCT run FROM parquet_db").df()
+
         try:
+            # Try to extract last part after underscore as tech rep
             if unique["run"].str.contains("_").all():
-                unique["run"] = unique["run"].str.split("_").str.get(1)
-                unique["run"] = unique["run"].astype("int")
+                # Get the last part after splitting by underscore
+                last_parts = unique["run"].str.split("_").str.get(-1)
+                unique["run"] = last_parts.astype("int")
             else:
+                # Try to convert directly to int
                 unique["run"] = unique["run"].astype("int")
-        except ValueError as e:
-            raise ValueError(
-                f"Some errors occurred when getting technical repetitions: {e}"
-            ) from e
+        except (ValueError, TypeError):
+            # Fall back to sequential integers
+            unique["run"] = list(range(1, len(unique) + 1))
 
         return unique["run"].tolist()
 
@@ -949,6 +1076,7 @@ def peptide_normalization(
     feature = Feature(parquet, filter_builder=filter_builder)
 
     if sdrf:
+        feature.enrich_with_sdrf(sdrf)
         technical_repetitions, label, sample_names, choice = analyse_sdrf(sdrf)
     else:
         technical_repetitions, label, sample_names, choice = feature.experimental_inference
