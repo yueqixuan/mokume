@@ -214,3 +214,6 @@ __marimo__/
 tests/data/pride_cache/
 hela/
 uniprotkb_Human_AND_reviewed_true_AND_m_2026_01_26.fasta.gz
+
+.codacy/
+.cursor
