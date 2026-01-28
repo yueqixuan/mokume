@@ -687,26 +687,29 @@ mokume provides a comprehensive filter system for quality control. Filters can b
 | MissingRateFilter | `max_missing_rate` | 1.0 | Max missing value rate |
 | SampleCorrelationFilter | `min_sample_correlation` | null | Min replicate correlation |
 
-### Example Filter Configuration (YAML)
+### Example Filter Configurations
+
+We provide several pre-configured filter templates for common use cases in [`tests/example/filters/`](tests/example/filters/):
+
+| Configuration | Use Case | Description |
+|---------------|----------|-------------|
+| [`basic_qc.yaml`](tests/example/filters/basic_qc.yaml) | General QC | Minimal filtering for standard experiments |
+| [`stringent_filtering.yaml`](tests/example/filters/stringent_filtering.yaml) | Publication | High-confidence results with strict thresholds |
+| [`tmt_labeling.yaml`](tests/example/filters/tmt_labeling.yaml) | TMT/iTRAQ | Optimized for multiplexed labeling experiments |
+| [`dia_analysis.yaml`](tests/example/filters/dia_analysis.yaml) | DIA | Optimized for DIA-NN, Spectronaut analysis |
+| [`exploratory_analysis.yaml`](tests/example/filters/exploratory_analysis.yaml) | Exploration | Minimal filtering for data exploration |
+
+**Example: Basic QC Configuration**
 
 ```yaml
-# filters.yaml - Preprocessing Filter Configuration
-name: stringent_filtering
+# basic_qc.yaml - Minimal filtering for standard experiments
+name: basic_qc
 enabled: true
-log_filtered_counts: true
 
 intensity:
-  min_intensity: 1000.0
-  cv_threshold: 0.3
-  min_replicate_agreement: 2
-  quantile_lower: 0.01
-  quantile_upper: 0.99
   remove_zero_intensity: true
 
 peptide:
-  allowed_charge_states: [2, 3, 4]
-  exclude_modifications: ["Oxidation"]
-  max_missed_cleavages: 2
   min_peptide_length: 7
   max_peptide_length: 50
 
@@ -714,11 +717,19 @@ protein:
   min_unique_peptides: 2
   remove_contaminants: true
   remove_decoys: true
-  contaminant_patterns: [CONTAMINANT, ENTRAP, DECOY]
+  contaminant_patterns:
+    - CONTAMINANT
+    - ENTRAP
+    - DECOY
+```
 
-run_qc:
-  min_identified_features: 100
-  max_missing_rate: 0.5
+Use these configurations directly:
+
+```bash
+mokume features2peptides \
+    -p features.parquet \
+    --filter-config tests/example/filters/basic_qc.yaml \
+    -o peptides.csv
 ```
 
 ## Data Processing Pipeline
