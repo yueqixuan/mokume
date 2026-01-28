@@ -8,7 +8,7 @@ feature normalization and the main peptide_normalization function.
 import os
 import re
 import time
-from typing import Iterator, Optional
+from typing import Iterator, Optional, TYPE_CHECKING
 
 import pandas as pd
 import numpy as np
@@ -38,6 +38,9 @@ from mokume.core.constants import (
 
 from mokume.core.write_queue import WriteParquetTask, WriteCSVTask
 from mokume.core.logger import get_logger, log_execution_time
+
+if TYPE_CHECKING:
+    from mokume.model.filters import PreprocessingFilterConfig
 
 # Get a logger for this module
 logger = get_logger("mokume.peptide_normalization")
@@ -594,6 +597,7 @@ def peptide_normalization(
     irs_stat: str = "median",
     irs_scope: str = "global",
     aggregation_level: str = AGGREGATION_LEVEL_SAMPLE,
+    filter_config: Optional["PreprocessingFilterConfig"] = None,
 ) -> None:
     """
     Perform peptide normalization on a proteomics dataset.
@@ -641,6 +645,9 @@ def peptide_normalization(
           downstream quantification. This is useful when you want to perform
           quantification (e.g., MaxLFQ) at the run level first, similar to
           DIA-NN's approach.
+    filter_config : PreprocessingFilterConfig, optional
+        Configuration for preprocessing filters. If provided, filters will be
+        applied to the data during processing.
     """
 
     if os.path.exists(output):
@@ -737,6 +744,19 @@ def peptide_normalization(
     except Exception as e:
         logger.warning("IRS normalization pre-computation failed: %s", e)
 
+    # Initialize filter pipeline if config provided
+    filter_pipeline = None
+    if filter_config is not None and filter_config.enabled:
+        from mokume.preprocessing.filters import get_filter_pipeline
+
+        filter_pipeline = get_filter_pipeline(filter_config)
+        if len(filter_pipeline) > 0:
+            logger.info(
+                "Filter pipeline '%s' initialized with %d filters",
+                filter_config.name,
+                len(filter_pipeline),
+            )
+
     for samples, df in feature.iter_samples():
         df.dropna(subset=["pg_accessions"], inplace=True)
         for sample in samples:
@@ -760,6 +780,29 @@ def peptide_normalization(
             if remove_ids is not None:
                 dataset_df = remove_protein_by_ids(dataset_df, remove_ids)
             dataset_df.rename(columns={INTENSITY: NORM_INTENSITY}, inplace=True)
+
+            # Apply filter pipeline if configured
+            if filter_pipeline is not None and len(filter_pipeline) > 0:
+                initial_count = len(dataset_df)
+                dataset_df, filter_results = filter_pipeline.apply(dataset_df)
+                if filter_config.log_filtered_counts:
+                    for result in filter_results:
+                        if result.removed_count > 0:
+                            logger.info(
+                                "%s: %s removed %d items (%.1f%%)",
+                                str(sample).upper(),
+                                result.filter_name,
+                                result.removed_count,
+                                result.removal_rate * 100,
+                            )
+                    total_removed = initial_count - len(dataset_df)
+                    if total_removed > 0:
+                        logger.info(
+                            "%s: Filter pipeline removed %d/%d items total",
+                            str(sample).upper(),
+                            total_removed,
+                            initial_count,
+                        )
 
             if (
                 not skip_normalization

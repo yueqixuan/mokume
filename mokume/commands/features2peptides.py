@@ -2,10 +2,14 @@
 CLI command for converting features to peptides.
 """
 
+import sys
+
 import click
 
 from mokume.normalization.peptide import peptide_normalization
 from mokume.model.normalization import FeatureNormalizationMethod, PeptideNormalizationMethod
+from mokume.preprocessing.filters.io import generate_example_config, load_filter_config
+from mokume.model.filters import PreprocessingFilterConfig
 
 
 @click.command("features2peptides", short_help="Convert features to parquet file.")
@@ -103,6 +107,68 @@ from mokume.model.normalization import FeatureNormalizationMethod, PeptideNormal
     type=click.Choice(["sample", "run"], case_sensitive=False),
     default="sample",
 )
+# Filter configuration options
+@click.option(
+    "--filter-config",
+    "filter_config",
+    type=click.Path(exists=True),
+    help="Path to YAML/JSON filter configuration file",
+)
+@click.option(
+    "--generate-filter-config",
+    "generate_filter_config",
+    type=click.Path(),
+    help="Generate example filter config file at specified path and exit",
+)
+# Filter override options (override config file values)
+@click.option(
+    "--filter-min-intensity",
+    "filter_min_intensity",
+    type=float,
+    help="Override: minimum intensity threshold",
+)
+@click.option(
+    "--filter-cv-threshold",
+    "filter_cv_threshold",
+    type=float,
+    help="Override: maximum CV threshold across replicates",
+)
+@click.option(
+    "--filter-charge-states",
+    "filter_charge_states",
+    type=str,
+    help="Override: allowed charge states (comma-separated, e.g., '2,3,4')",
+)
+@click.option(
+    "--filter-max-missed-cleavages",
+    "filter_max_missed_cleavages",
+    type=int,
+    help="Override: maximum missed cleavages",
+)
+@click.option(
+    "--filter-exclude-modifications",
+    "filter_exclude_modifications",
+    type=str,
+    help="Override: modifications to exclude (comma-separated, e.g., 'Oxidation,Deamidated')",
+)
+@click.option(
+    "--filter-min-unique-peptides",
+    "filter_min_unique_peptides",
+    type=int,
+    help="Override: minimum unique peptides per protein",
+)
+@click.option(
+    "--filter-min-features",
+    "filter_min_features",
+    type=int,
+    help="Override: minimum identified features per run",
+)
+@click.option(
+    "--filter-max-missing-rate",
+    "filter_max_missing_rate",
+    type=float,
+    help="Override: maximum missing rate per run (0.0-1.0)",
+)
 @click.pass_context
 def features2parquet(
     ctx,
@@ -124,10 +190,65 @@ def features2parquet(
     irs_stat: str,
     irs_scope: str,
     aggregation_level: str,
+    # Filter options
+    filter_config: str,
+    generate_filter_config: str,
+    filter_min_intensity: float,
+    filter_cv_threshold: float,
+    filter_charge_states: str,
+    filter_max_missed_cleavages: int,
+    filter_exclude_modifications: str,
+    filter_min_unique_peptides: int,
+    filter_min_features: int,
+    filter_max_missing_rate: float,
 ) -> None:
     """
     Convert feature data to a parquet file with optional normalization and filtering steps.
+
+    Supports filter configuration via YAML/JSON files or CLI overrides.
+    Use --generate-filter-config to create an example configuration file.
     """
+    # Handle --generate-filter-config
+    if generate_filter_config:
+        generate_example_config(generate_filter_config)
+        click.echo(f"Generated example filter config at: {generate_filter_config}")
+        sys.exit(0)
+
+    # Build filter overrides dict from CLI options
+    filter_overrides = {}
+    if filter_min_intensity is not None:
+        filter_overrides["min_intensity"] = filter_min_intensity
+    if filter_cv_threshold is not None:
+        filter_overrides["cv_threshold"] = filter_cv_threshold
+    if filter_charge_states is not None:
+        filter_overrides["charge_states"] = [
+            int(x.strip()) for x in filter_charge_states.split(",")
+        ]
+    if filter_max_missed_cleavages is not None:
+        filter_overrides["max_missed_cleavages"] = filter_max_missed_cleavages
+    if filter_exclude_modifications is not None:
+        filter_overrides["exclude_modifications"] = [
+            x.strip() for x in filter_exclude_modifications.split(",")
+        ]
+    if filter_min_unique_peptides is not None:
+        filter_overrides["min_unique_peptides"] = filter_min_unique_peptides
+    if filter_min_features is not None:
+        filter_overrides["min_features"] = filter_min_features
+    if filter_max_missing_rate is not None:
+        filter_overrides["max_missing_rate"] = filter_max_missing_rate
+
+    # Load filter config if provided
+    preprocessing_config = None
+    if filter_config:
+        preprocessing_config = load_filter_config(filter_config)
+        # Apply CLI overrides
+        if filter_overrides:
+            preprocessing_config.apply_overrides(filter_overrides)
+    elif filter_overrides:
+        # Create config from overrides only
+        preprocessing_config = PreprocessingFilterConfig(name="cli_config")
+        preprocessing_config.apply_overrides(filter_overrides)
+
     peptide_normalization(
         parquet=parquet,
         sdrf=sdrf,
@@ -147,4 +268,5 @@ def features2parquet(
         irs_stat=irs_stat,
         irs_scope=irs_scope,
         aggregation_level=aggregation_level,
+        filter_config=preprocessing_config,
     )
