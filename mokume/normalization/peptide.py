@@ -8,6 +8,7 @@ feature normalization and the main peptide_normalization function.
 import os
 import re
 import time
+from dataclasses import dataclass, field
 from typing import Iterator, Optional, TYPE_CHECKING
 
 import pandas as pd
@@ -44,6 +45,76 @@ if TYPE_CHECKING:
 
 # Get a logger for this module
 logger = get_logger("mokume.peptide_normalization")
+
+
+@dataclass
+class SQLFilterBuilder:
+    """Builds SQL WHERE clauses for filtering parquet data at query time.
+
+    This class is used to ensure that normalization factors (median maps, peptide
+    frequencies, IRS scaling) are computed on filtered data that excludes contaminants,
+    decoys, and other artifacts.
+
+    Attributes
+    ----------
+    remove_contaminants : bool
+        Whether to exclude rows containing contaminant patterns in pg_accessions.
+    contaminant_patterns : list[str]
+        List of substring patterns to identify contaminants (e.g., ["CONTAMINANT", "DECOY"]).
+    min_intensity : float
+        Minimum intensity threshold (0.0 means only filter intensity > 0).
+    min_peptide_length : int
+        Minimum peptide sequence length.
+    require_unique : bool
+        Whether to require unique peptides only (unique = 1).
+    """
+
+    remove_contaminants: bool = True
+    contaminant_patterns: list[str] = field(
+        default_factory=lambda: ["CONTAMINANT", "ENTRAP", "DECOY"]
+    )
+    min_intensity: float = 0.0
+    min_peptide_length: int = 7
+    require_unique: bool = True
+
+    def build_where_clause(self) -> str:
+        """Build SQL WHERE clause string for DuckDB queries.
+
+        Returns
+        -------
+        str
+            A SQL WHERE clause (without the WHERE keyword) that can be used
+            in DuckDB queries to filter the parquet data.
+        """
+        conditions = []
+
+        # Always filter intensity > 0
+        conditions.append("intensity > 0")
+
+        # Min intensity threshold
+        if self.min_intensity > 0:
+            conditions.append(f"intensity >= {self.min_intensity}")
+
+        # Peptide length filter
+        if self.min_peptide_length > 0:
+            conditions.append(f'LENGTH("sequence") >= {self.min_peptide_length}')
+
+        # Unique peptides only
+        if self.require_unique:
+            conditions.append('"unique" = 1')
+
+        # Contaminant/decoy filter - cast pg_accessions array to text for LIKE matching
+        if self.remove_contaminants and self.contaminant_patterns:
+            pattern_conditions = []
+            for pattern in self.contaminant_patterns:
+                # Escape any SQL special characters in the pattern
+                safe_pattern = pattern.replace("'", "''")
+                pattern_conditions.append(
+                    f"pg_accessions::text NOT LIKE '%{safe_pattern}%'"
+                )
+            conditions.append(f"({' AND '.join(pattern_conditions)})")
+
+        return " AND ".join(conditions) if conditions else "1=1"
 
 
 def parse_uniprot_accession(uniprot_id: str) -> str:
@@ -409,20 +480,31 @@ class Feature:
     """
     Represents a feature in a proteomics dataset, providing methods for data manipulation
     and analysis using a DuckDB database connection to a Parquet file.
+
+    Attributes
+    ----------
+    filter_builder : Optional[SQLFilterBuilder]
+        If provided, this filter builder will be used to apply SQL-level filtering
+        when computing normalization factors (median maps, peptide frequencies, etc.).
+        This ensures normalization is computed on clean data without contaminants/decoys.
     """
 
     labels: Optional[list[str]]
     label: Optional[QuantificationCategory]
     choice: Optional[IsobaricLabel]
     technical_repetitions: Optional[int]
+    filter_builder: Optional[SQLFilterBuilder]
 
-    def __init__(self, database_path: str):
+    def __init__(
+        self, database_path: str, filter_builder: Optional[SQLFilterBuilder] = None
+    ):
         if os.path.exists(database_path):
             self.parquet_db = duckdb.connect()
             self.parquet_db = self.parquet_db.execute(
                 "CREATE VIEW parquet_db AS SELECT * FROM parquet_scan('{}')".format(database_path)
             )
             self.samples = self.get_unique_samples()
+            self.filter_builder = filter_builder
         else:
             raise FileNotFoundError(f"the file {database_path} does not exist.")
 
@@ -443,13 +525,36 @@ class Feature:
         self.technical_repetitions = self.get_unique_tec_reps()
         return len(self.technical_repetitions), self.label, self.samples, self.choice
 
-    @property
-    def low_frequency_peptides(self, percentage=0.2) -> tuple:
-        """Identifies peptides that occur with low frequency across samples."""
+    def get_low_frequency_peptides(self, percentage: float = 0.2) -> tuple:
+        """Identifies peptides that occur with low frequency across samples.
+
+        If a filter_builder is set on this Feature instance, it will be used to
+        exclude contaminants, decoys, and other artifacts from the frequency
+        calculation.
+
+        Parameters
+        ----------
+        percentage : float
+            The frequency threshold. Peptides appearing in less than this
+            fraction of samples are considered low frequency. Default is 0.2 (20%).
+
+        Returns
+        -------
+        tuple
+            A tuple of (protein_accession, sequence) pairs for low frequency peptides.
+        """
+        where_clause = (
+            self.filter_builder.build_where_clause()
+            if self.filter_builder
+            else "1=1"
+        )
+
         f_table = self.parquet_db.sql(
-            """
-            SELECT "sequence", "pg_accessions", COUNT(DISTINCT sample_accession) as "count" from parquet_db
-            GROUP BY "sequence","pg_accessions"
+            f"""
+            SELECT "sequence", "pg_accessions", COUNT(DISTINCT sample_accession) as "count"
+            FROM parquet_db
+            WHERE {where_clause}
+            GROUP BY "sequence", "pg_accessions"
             """
         ).df()
         f_table.dropna(subset=["pg_accessions"], inplace=True)
@@ -524,14 +629,40 @@ class Feature:
         return unique["run"].tolist()
 
     def get_median_map(self) -> dict[str, float]:
-        """Computes a median intensity map for samples."""
-        med_map: dict[str, float] = {}
-        for _, batch_df in self.iter_samples(1000, ["sample_accession", "intensity"]):
-            meds = batch_df.groupby(["sample_accession"])["intensity"].median()
-            med_map.update(meds.to_dict())
-        global_med = np.median([med for med in med_map.values()])
+        """Computes a median intensity map for samples.
+
+        If a filter_builder is set on this Feature instance, it will be used to
+        exclude contaminants, decoys, and other artifacts from the median
+        calculation. This ensures normalization factors are computed on clean data.
+
+        Returns
+        -------
+        dict[str, float]
+            A dictionary mapping sample accessions to their normalization factors
+            (sample median / global median).
+        """
+        where_clause = (
+            self.filter_builder.build_where_clause()
+            if self.filter_builder
+            else "1=1"
+        )
+
+        # Use SQL aggregation with filtering for efficiency
+        result = self.parquet_db.sql(
+            f"""
+            SELECT sample_accession, MEDIAN(intensity) as median_intensity
+            FROM parquet_db
+            WHERE {where_clause}
+            GROUP BY sample_accession
+            """
+        ).df()
+
+        med_map = dict(zip(result["sample_accession"], result["median_intensity"]))
+        global_med = np.median(list(med_map.values()))
+
         for sample, med in med_map.items():
             med_map[sample] = med / global_med
+
         return med_map
 
     def get_report_condition_from_database(self, cons: list, columns: list = None) -> pd.DataFrame:
@@ -561,20 +692,151 @@ class Feature:
         return unique["condition"].tolist()
 
     def get_median_map_to_condition(self) -> dict[str, dict[str, float]]:
-        """Computes a median intensity map for each experimental condition."""
+        """Computes a median intensity map for each experimental condition.
+
+        If a filter_builder is set on this Feature instance, it will be used to
+        exclude contaminants, decoys, and other artifacts from the median
+        calculation. This ensures normalization factors are computed on clean data.
+
+        Returns
+        -------
+        dict[str, dict[str, float]]
+            A nested dictionary mapping conditions to sample normalization factors.
+            For each condition, samples are normalized to the condition mean.
+        """
+        where_clause = (
+            self.filter_builder.build_where_clause()
+            if self.filter_builder
+            else "1=1"
+        )
+
+        # Use SQL aggregation with filtering for efficiency
+        result = self.parquet_db.sql(
+            f"""
+            SELECT condition, sample_accession, MEDIAN(intensity) as median_intensity
+            FROM parquet_db
+            WHERE {where_clause}
+            GROUP BY condition, sample_accession
+            """
+        ).df()
+
         med_map = {}
-        for cons, batch_df in self.iter_conditions(
-            1000, ["condition", "sample_accession", "intensity"]
-        ):
-            for con in cons:
-                meds = (
-                    batch_df[batch_df["condition"] == con]
-                    .groupby(["sample_accession"])["intensity"]
-                    .median()
-                )
-                meds = meds / meds.mean()
-                med_map[con] = meds.to_dict()
+        for condition in result["condition"].unique():
+            cond_data = result[result["condition"] == condition]
+            meds = pd.Series(
+                cond_data["median_intensity"].values,
+                index=cond_data["sample_accession"].values,
+            )
+            meds = meds / meds.mean()
+            med_map[condition] = meds.to_dict()
+
         return med_map
+
+    def get_irs_scaling_factors(
+        self,
+        irs_channel: str,
+        irs_stat: str = "median",
+        irs_scope: str = "global",
+    ) -> dict[int, float]:
+        """Compute IRS (Internal Reference Scaling) factors with filtering applied.
+
+        If a filter_builder is set on this Feature instance, it will be used to
+        exclude contaminants, decoys, and other artifacts from the IRS calculation.
+
+        Parameters
+        ----------
+        irs_channel : str
+            The channel label to use as internal reference (e.g., "126").
+        irs_stat : str
+            Statistic to use for computing reference values: "median" or "mean".
+        irs_scope : str
+            Scope of normalization: "global", "by_mixture", or "two_stage".
+
+        Returns
+        -------
+        dict[int, float]
+            Dictionary mapping technical replicate indices to scaling factors.
+        """
+        stat_fn = "median" if (irs_stat or "").lower() == "median" else "avg"
+
+        # Build filter conditions for contaminants only (not unique peptide requirement)
+        # since IRS uses specific channel which may have different characteristics
+        filter_conditions = ["intensity > 0"]
+
+        if self.filter_builder and self.filter_builder.remove_contaminants:
+            for pattern in self.filter_builder.contaminant_patterns:
+                safe_pattern = pattern.replace("'", "''")
+                filter_conditions.append(
+                    f"pg_accessions::text NOT LIKE '%{safe_pattern}%'"
+                )
+
+        if self.filter_builder and self.filter_builder.min_intensity > 0:
+            filter_conditions.append(
+                f"intensity >= {self.filter_builder.min_intensity}"
+            )
+
+        # Add channel filter
+        filter_conditions.append(f"channel = '{irs_channel}'")
+        where_clause = " AND ".join(filter_conditions)
+
+        irs_df = self.parquet_db.sql(
+            f"""
+            SELECT run, {stat_fn}(intensity) as irs_value, mixture, techreplicate as techrep_guess
+            FROM (
+                SELECT *,
+                       CASE WHEN position('_' in run) > 0 THEN CAST(split_part(run, '_', 2) AS INTEGER)
+                            ELSE CAST(run AS INTEGER) END AS techreplicate
+                FROM parquet_db
+                WHERE {where_clause}
+            )
+            GROUP BY run, mixture, techrep_guess
+            """
+        ).df()
+
+        irs_scale_by_techrep: dict[int, float] = {}
+
+        if len(irs_df.index) > 0:
+            irs_df = irs_df[irs_df["irs_value"] > 0]
+
+            if irs_scope.lower() == "by_mixture":
+                transform_fn = "median" if stat_fn == "median" else "mean"
+                irs_df["mixture_center"] = irs_df.groupby("mixture")[
+                    "irs_value"
+                ].transform(transform_fn)
+                irs_df["scale"] = irs_df["mixture_center"] / irs_df["irs_value"]
+            elif irs_scope.lower() == "two_stage":
+                transform_fn = "median" if stat_fn == "median" else "mean"
+                irs_df["mixture_center"] = irs_df.groupby("mixture")[
+                    "irs_value"
+                ].transform(transform_fn)
+                irs_df["scale_stage1"] = (
+                    irs_df["mixture_center"] / irs_df["irs_value"]
+                )
+                mixture_center_df = irs_df[["mixture", "mixture_center"]].drop_duplicates()
+                if stat_fn == "median":
+                    global_center = mixture_center_df["mixture_center"].median()
+                else:
+                    global_center = mixture_center_df["mixture_center"].mean()
+                mixture_center_df["scale_stage2"] = (
+                    global_center / mixture_center_df["mixture_center"]
+                )
+                irs_df = irs_df.merge(
+                    mixture_center_df, on="mixture", how="left", suffixes=("", "_mix")
+                )
+                irs_df["scale"] = irs_df["scale_stage1"] * irs_df["scale_stage2"]
+            else:
+                # Global scope
+                if stat_fn == "median":
+                    global_center = irs_df["irs_value"].median()
+                else:
+                    global_center = irs_df["irs_value"].mean()
+                irs_df["scale"] = global_center / irs_df["irs_value"]
+
+            irs_scale_by_techrep = dict(
+                zip(irs_df["techrep_guess"].tolist(), irs_df["scale"].tolist())
+            )
+
+        return irs_scale_by_techrep
 
 
 @log_execution_time(logger)
@@ -660,7 +922,31 @@ def peptide_normalization(
     peptide_normalized = PeptideNormalizationMethod.from_str(pnmethod)
 
     logger.info("Loading data from %s...", parquet)
-    feature = Feature(parquet)
+
+    # Create filter builder for pre-computations (median maps, peptide frequencies)
+    # This ensures normalization factors are computed on clean data without
+    # contaminants, decoys, and other artifacts
+    if filter_config is not None and filter_config.enabled:
+        filter_builder = SQLFilterBuilder(
+            remove_contaminants=(
+                filter_config.protein.remove_contaminants
+                or filter_config.protein.remove_decoys
+            ),
+            contaminant_patterns=filter_config.protein.contaminant_patterns,
+            min_intensity=filter_config.intensity.min_intensity,
+            min_peptide_length=min_aa,
+            require_unique=True,
+        )
+    else:
+        filter_builder = SQLFilterBuilder(
+            remove_contaminants=remove_decoy_contaminants,
+            contaminant_patterns=["CONTAMINANT", "ENTRAP", "DECOY"],
+            min_intensity=0.0,
+            min_peptide_length=min_aa,
+            require_unique=True,
+        )
+
+    feature = Feature(parquet, filter_builder=filter_builder)
 
     if sdrf:
         technical_repetitions, label, sample_names, choice = analyse_sdrf(sdrf)
@@ -668,7 +954,7 @@ def peptide_normalization(
         technical_repetitions, label, sample_names, choice = feature.experimental_inference
 
     if remove_low_frequency_peptides:
-        low_frequency_peptides = feature.low_frequency_peptides
+        low_frequency_peptides = feature.get_low_frequency_peptides()
 
     med_map = {}
     if not skip_normalization and peptide_normalized == PeptideNormalizationMethod.GlobalMedian:
@@ -704,42 +990,15 @@ def peptide_normalization(
                     logger.warning("IRS autodetect regex '%s' found no pooled sample; skipping IRS.", irs_autodetect_regex)
 
             if irs_channel is not None:
-                stat_fn = "median" if (irs_stat or "").lower() == "median" else "avg"
-                irs_df = feature.parquet_db.sql(
-                    f"""
-                    SELECT run, {stat_fn}(intensity) as irs_value, mixture, techreplicate as techrep_guess
-                    FROM (
-                        SELECT *,
-                               CASE WHEN position('_' in run) > 0 THEN CAST(split_part(run, '_', 2) AS INTEGER)
-                                    ELSE CAST(run AS INTEGER) END AS techreplicate
-                        FROM parquet_db
-                        WHERE channel = '{irs_channel}'
-                    )
-                    GROUP BY run, mixture, techrep_guess
-                    """
-                ).df()
-                if len(irs_df.index) > 0:
-                    irs_df = irs_df[irs_df["irs_value"] > 0]
-
-                    if irs_scope.lower() == "by_mixture":
-                        irs_df["mixture_center"] = irs_df.groupby("mixture")["irs_value"].transform("median" if stat_fn == "median" else "mean")
-                        irs_df["scale"] = irs_df["mixture_center"] / irs_df["irs_value"]
-                    elif irs_scope.lower() == "two_stage":
-                        irs_df["mixture_center"] = irs_df.groupby("mixture")["irs_value"].transform("median" if stat_fn == "median" else "mean")
-                        irs_df["scale_stage1"] = irs_df["mixture_center"] / irs_df["irs_value"]
-                        mixture_center_df = irs_df[["mixture", "mixture_center"]].drop_duplicates()
-                        global_center = (mixture_center_df["mixture_center"].median() if stat_fn == "median" else mixture_center_df["mixture_center"].mean())
-                        mixture_center_df["scale_stage2"] = global_center / mixture_center_df["mixture_center"]
-                        irs_df = irs_df.merge(mixture_center_df, on="mixture", how="left", suffixes=("", "_mix"))
-                        irs_df["scale"] = irs_df["scale_stage1"] * irs_df["scale_stage2"]
-                    else:
-                        global_center = (irs_df["irs_value"].median() if stat_fn == "median" else irs_df["irs_value"].mean())
-                        irs_df["scale"] = global_center / irs_df["irs_value"]
-
-                    irs_scale_by_techrep = dict(zip(irs_df["techrep_guess"].tolist(), irs_df["scale"].tolist()))
-                else:
+                irs_scale_by_techrep = feature.get_irs_scaling_factors(
+                    irs_channel=irs_channel,
+                    irs_stat=irs_stat,
+                    irs_scope=irs_scope,
+                )
+                if not irs_scale_by_techrep:
                     logger.warning(
-                        "IRS channel '%s' not found in dataset; skipping IRS normalization.", irs_channel,
+                        "IRS channel '%s' not found in dataset; skipping IRS normalization.",
+                        irs_channel,
                     )
     except Exception as e:
         logger.warning("IRS normalization pre-computation failed: %s", e)
