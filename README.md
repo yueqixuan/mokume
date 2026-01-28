@@ -115,6 +115,20 @@ mokume/
 
 **DirectLFQ requires optional install: `pip install mokume[directlfq]`
 
+### MaxLFQ Algorithm Details
+
+The `MaxLFQQuantification` class provides two implementations:
+
+1. **DirectLFQ backend** (default when installed): Uses the DirectLFQ package for maximum accuracy with variance-guided pairwise alignment.
+
+2. **Built-in fallback**: A parallelized implementation using peptide trace alignment:
+   - Aligns peptide intensity traces within each protein using median shifts
+   - Aggregates aligned traces using median per sample
+   - Scales results to preserve total peptide intensity
+   - Achieves ~0.95 Spearman correlation with DIA-NN's MaxLFQ values
+
+Use `force_builtin=True` to always use the built-in implementation, or check `maxlfq.using_directlfq` to see which backend is active.
+
 ## CLI Usage
 
 ### Peptides to Protein Quantification
@@ -137,8 +151,9 @@ mokume peptides2protein --method topn --topn_n 5 \
     -o proteins-top5.tsv
 
 # Using MaxLFQ with parallelization
+# Automatically uses DirectLFQ backend if installed, otherwise built-in
 mokume peptides2protein --method maxlfq \
-    --n_jobs 4 \
+    --threads 4 \
     -p peptides.csv \
     -o proteins-maxlfq.tsv
 
@@ -238,17 +253,27 @@ result = topn.quantify(peptides, protein_column="ProteinName", ...)
 # --- MaxLFQ Quantification ---
 # Automatically uses DirectLFQ if installed, otherwise falls back to built-in
 maxlfq = MaxLFQQuantification(
-    min_peptides=2,
-    threads=4,              # Use 4 parallel cores
+    min_peptides=2,         # Minimum peptides required for MaxLFQ (uses median for fewer)
+    threads=4,              # Use 4 parallel cores (-1 for all cores)
 )
 result = maxlfq.quantify(peptides, protein_column="ProteinName", ...)
 
 # Check which implementation is being used
 print(f"Using DirectLFQ: {maxlfq.using_directlfq}")
+print(f"Implementation: {maxlfq.name}")  # "MaxLFQ (DirectLFQ)" or "MaxLFQ (built-in)"
+
 # For best accuracy, install DirectLFQ: pip install mokume[directlfq]
 
 # Force built-in implementation (for testing/comparison)
 maxlfq_builtin = MaxLFQQuantification(min_peptides=2, force_builtin=True)
+
+# Run-level quantification (uses built-in implementation)
+result = maxlfq.quantify(
+    peptides,
+    protein_column="ProteinName",
+    sample_column="SampleID",
+    run_column="Run",  # Optional: quantify at run level instead of sample level
+)
 
 # --- DirectLFQ Quantification (standalone, optional dependency) ---
 if is_directlfq_available():
@@ -261,7 +286,7 @@ sum_quant = AllPeptidesQuantification()
 result = sum_quant.quantify(peptides, protein_column="ProteinName", ...)
 
 # --- Factory Function ---
-method = get_quantification_method("maxlfq", min_peptides=2, n_jobs=-1)
+method = get_quantification_method("maxlfq", min_peptides=2, threads=-1)
 result = method.quantify(peptides, ...)
 
 # --- Check available methods ---
