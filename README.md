@@ -19,10 +19,17 @@ The name comes from [mokume-gane](https://en.wikipedia.org/wiki/Mokume-gane) (�
 pip install mokume
 ```
 
-With optional DirectLFQ support:
+With optional extras:
 
 ```bash
+# DirectLFQ support
 pip install mokume[directlfq]
+
+# Plotting support (for QC reports and visualizations)
+pip install mokume[plotting]
+
+# All optional dependencies
+pip install mokume[all]
 ```
 
 Or install from source:
@@ -55,12 +62,24 @@ mokume/
 │   ├── normalization.py     # Normalization method enums
 │   ├── organism.py          # Organism metadata (histones, genome size)
 │   ├── quantification.py    # Quantification method enums
-│   └── summarization.py     # Summarization strategy enums
+│   ├── summarization.py     # Summarization strategy enums
+│   └── filters.py           # Filter configuration dataclasses
 │
 ├── normalization/           # Normalization implementations
 │   ├── feature.py           # Feature-level normalization
 │   ├── peptide.py           # Peptide-level normalization pipeline
 │   └── protein.py           # Protein-level normalization
+│
+├── preprocessing/           # Preprocessing filters
+│   └── filters/             # Quality control filters
+│       ├── base.py          # Base filter class
+│       ├── intensity.py     # Intensity-based filters
+│       ├── peptide.py       # Peptide-level filters
+│       ├── protein.py       # Protein-level filters
+│       ├── run_qc.py        # Run/sample QC filters
+│       ├── pipeline.py      # Filter pipeline orchestration
+│       ├── factory.py       # Filter factory functions
+│       └── io.py            # YAML/JSON config loading
 │
 ├── quantification/          # Protein quantification methods
 │   ├── base.py              # Abstract base class
@@ -84,6 +103,10 @@ mokume/
 │   ├── reshape.py           # Pivot operations (wide/long format)
 │   ├── batch_correction.py  # ComBat batch correction
 │   └── combiner.py          # Multi-file combining
+│
+├── plotting/                # Visualization (optional: pip install mokume[plotting])
+│   ├── distributions.py     # Distribution and box plots
+│   └── pca.py               # PCA and t-SNE plots
 │
 ├── io/                      # Input/Output utilities
 │   ├── parquet.py           # Parquet/TSV reading, AnnData creation
@@ -197,6 +220,52 @@ mokume features2peptides \
     --nmethod median \
     --pnmethod globalMedian \
     --output peptides-norm.csv
+```
+
+### Preprocessing Filters
+
+mokume supports comprehensive preprocessing filters via YAML/JSON configuration files or CLI options.
+
+**Generate example filter configuration:**
+
+```bash
+mokume features2peptides --generate-filter-config filters.yaml
+```
+
+**Use filter configuration file:**
+
+```bash
+mokume features2peptides \
+    -p features.parquet \
+    -s experiment.sdrf.tsv \
+    --filter-config filters.yaml \
+    --output peptides-filtered.csv
+```
+
+**CLI filter overrides (take precedence over config file):**
+
+```bash
+mokume features2peptides \
+    -p features.parquet \
+    -s experiment.sdrf.tsv \
+    --filter-config filters.yaml \
+    --filter-min-intensity 1000 \
+    --filter-cv-threshold 0.3 \
+    --filter-charge-states "2,3,4" \
+    --filter-max-missed-cleavages 2 \
+    --output peptides-filtered.csv
+```
+
+**CLI-only filtering (no config file):**
+
+```bash
+mokume features2peptides \
+    -p features.parquet \
+    -s experiment.sdrf.tsv \
+    --filter-min-intensity 500 \
+    --filter-min-unique-peptides 2 \
+    --filter-max-missing-rate 0.5 \
+    --output peptides-filtered.csv
 ```
 
 ### Batch Correction
@@ -333,6 +402,75 @@ peptide_normalization(
     pnmethod="globalMedian",  # Peptide normalization: globalMedian, conditionMedian, none
     log2=True,
     save_parquet=False,
+)
+```
+
+### Preprocessing Filters
+
+```python
+from mokume.preprocessing.filters import (
+    load_filter_config,
+    save_filter_config,
+    generate_example_config,
+    get_filter_pipeline,
+    FilterPipeline,
+)
+from mokume.model.filters import PreprocessingFilterConfig
+
+# Generate example configuration file
+generate_example_config("filters.yaml")
+
+# Load configuration from file
+config = load_filter_config("filters.yaml")
+
+# Create configuration programmatically
+config = PreprocessingFilterConfig(
+    name="custom_filters",
+    enabled=True,
+    log_filtered_counts=True,
+)
+config.intensity.min_intensity = 1000.0
+config.intensity.cv_threshold = 0.3
+config.peptide.allowed_charge_states = [2, 3, 4]
+config.peptide.exclude_modifications = ["Oxidation"]
+config.protein.min_unique_peptides = 2
+config.run_qc.max_missing_rate = 0.5
+
+# Apply CLI-style overrides
+config.apply_overrides({
+    "min_intensity": 500,
+    "charge_states": [2, 3],
+    "max_missing_rate": 0.3,
+})
+
+# Save configuration
+save_filter_config(config, "my_filters.yaml")
+
+# Create and use filter pipeline directly
+pipeline = get_filter_pipeline(config)
+
+import pandas as pd
+df = pd.read_csv("peptides.csv")
+filtered_df, results = pipeline.apply(df)
+
+# Check filter results
+for result in results:
+    print(f"{result.filter_name}: removed {result.removed_count} ({result.removal_rate:.1%})")
+
+# Get pipeline summary
+summary = pipeline.summary(results)
+print(f"Total removed: {summary['total_removed']} / {summary['total_input']}")
+
+# Use filters with peptide_normalization
+from mokume.normalization.peptide import peptide_normalization
+
+peptide_normalization(
+    parquet="features.parquet",
+    sdrf="experiment.sdrf.tsv",
+    output="peptides-filtered.csv",
+    nmethod="median",
+    pnmethod="globalMedian",
+    filter_config=config,  # Pass filter configuration
 )
 ```
 
@@ -503,6 +641,85 @@ print(human.histone_entries)  # List of histone protein accessions
 | `globalMedian` | Adjust all samples to global median |
 | `conditionMedian` | Adjust samples within each condition to median |
 | `none` | Skip peptide normalization |
+
+## Preprocessing Filters
+
+mokume provides a comprehensive filter system for quality control. Filters can be configured via YAML/JSON files or CLI options.
+
+### Filter Categories
+
+#### Intensity Filters
+
+| Filter | Parameter | Default | Description |
+|--------|-----------|---------|-------------|
+| MinIntensityFilter | `min_intensity` | 0.0 | Remove features below threshold |
+| CVThresholdFilter | `cv_threshold` | null | Max CV across replicates |
+| ReplicateAgreementFilter | `min_replicate_agreement` | 1 | Min replicates with detection |
+| QuantileFilter | `quantile_lower/upper` | 0.0/1.0 | Remove intensity outliers |
+
+#### Peptide Filters
+
+| Filter | Parameter | Default | Description |
+|--------|-----------|---------|-------------|
+| PeptideLengthFilter | `min/max_peptide_length` | 7/50 | Peptide length range |
+| ChargeStateFilter | `allowed_charge_states` | null | Allowed charges (e.g., [2,3,4]) |
+| ModificationFilter | `exclude_modifications` | [] | Remove specific modifications |
+| MissedCleavageFilter | `max_missed_cleavages` | null | Max missed cleavages |
+| SearchScoreFilter | `min_search_score` | null | Min search engine score |
+| SequencePatternFilter | `exclude_sequence_patterns` | [] | Regex patterns to exclude |
+
+#### Protein Filters
+
+| Filter | Parameter | Default | Description |
+|--------|-----------|---------|-------------|
+| ContaminantFilter | `remove_contaminants/decoys` | true | Remove contaminants/decoys |
+| MinPeptideFilter | `min_unique_peptides` | 2 | Min unique peptides per protein |
+| ProteinFDRFilter | `fdr_threshold` | 0.01 | Protein-level FDR |
+| CoverageFilter | `min_coverage` | 0.0 | Min sequence coverage |
+| RazorPeptideFilter | `razor_peptide_handling` | "keep" | Handle shared peptides |
+
+#### Run/Sample QC Filters
+
+| Filter | Parameter | Default | Description |
+|--------|-----------|---------|-------------|
+| RunIntensityFilter | `min_total_intensity` | 0.0 | Min total intensity per run |
+| MinFeaturesFilter | `min_identified_features` | 0 | Min features per run |
+| MissingRateFilter | `max_missing_rate` | 1.0 | Max missing value rate |
+| SampleCorrelationFilter | `min_sample_correlation` | null | Min replicate correlation |
+
+### Example Filter Configuration (YAML)
+
+```yaml
+# filters.yaml - Preprocessing Filter Configuration
+name: stringent_filtering
+enabled: true
+log_filtered_counts: true
+
+intensity:
+  min_intensity: 1000.0
+  cv_threshold: 0.3
+  min_replicate_agreement: 2
+  quantile_lower: 0.01
+  quantile_upper: 0.99
+  remove_zero_intensity: true
+
+peptide:
+  allowed_charge_states: [2, 3, 4]
+  exclude_modifications: ["Oxidation"]
+  max_missed_cleavages: 2
+  min_peptide_length: 7
+  max_peptide_length: 50
+
+protein:
+  min_unique_peptides: 2
+  remove_contaminants: true
+  remove_decoys: true
+  contaminant_patterns: [CONTAMINANT, ENTRAP, DECOY]
+
+run_qc:
+  min_identified_features: 100
+  max_missing_rate: 0.5
+```
 
 ## Data Processing Pipeline
 
