@@ -9,9 +9,7 @@ import logging
 import warnings
 from typing import List, Optional
 
-import matplotlib.pyplot as plt
 import pandas as pd
-import seaborn as sns
 
 warnings.filterwarnings(
     "ignore", category=PendingDeprecationWarning, module="numpy.matrixlib.defmatrix"
@@ -19,6 +17,8 @@ warnings.filterwarnings(
 
 from sklearn.cluster._hdbscan import hdbscan
 from sklearn.decomposition import PCA
+
+from mokume.plotting import is_plotting_available
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -60,27 +60,6 @@ def remove_single_sample_batches(df: pd.DataFrame, batch: list) -> pd.DataFrame:
     ]
     df_single_batches_removed = df.drop(single_sample_batch, axis=1)
     return df_single_batches_removed
-
-
-def plot_pca(
-    df_pca,
-    output_file,
-    x_col="PC1",
-    y_col="PC2",
-    hue_col="batch",
-    palette="Set2",
-    title="PCA plot",
-    figsize=(8, 6),
-):
-    """Plot a PCA scatter plot and save it to a file."""
-    fig, ax = plt.subplots(figsize=figsize)
-    sns.scatterplot(x=x_col, y=y_col, hue=hue_col, data=df_pca, palette=palette, ax=ax)
-    ax.set_title(title)
-    ax.set_xlabel(x_col)
-    ax.set_ylabel(y_col)
-    ax.legend(loc="center left", bbox_to_anchor=(1.05, 0.5))
-    plt.tight_layout()
-    plt.savefig(output_file, bbox_inches="tight")
 
 
 class TooFewSamplesInBatch(ValueError):
@@ -186,6 +165,14 @@ def iterative_outlier_removal(
     """Iteratively remove outliers using PCA and HDBSCAN clustering."""
     batch_dict = dict(zip(df.columns, batch))
 
+    # Check plotting availability once if verbose
+    can_plot = verbose and is_plotting_available()
+    if verbose and not can_plot:
+        logger.warning(
+            "Plotting skipped: plotting dependencies not installed. "
+            "Install with: pip install mokume[plotting]"
+        )
+
     for i in range(n_iter):
         logger.info("Running iteration: {}".format(i + 1))
 
@@ -203,7 +190,9 @@ def iterative_outlier_removal(
         batch_dict = {col: batch_dict[col] for col in df_filtered_outliers.columns}
         df = df_filtered_outliers
 
-        if verbose:
+        if can_plot:
+            from mokume.plotting import plot_pca
+
             plot_pca(
                 df_clusters,
                 output_file=f"iterative_outlier_removal_{i + 1}.png",

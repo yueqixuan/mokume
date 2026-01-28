@@ -40,12 +40,10 @@ pyopenms = "*"
 numpy = "<2.1.0"
 click = "*"
 pandas = "*"
-matplotlib = "*"
 pyarrow = ">=16.1.0"
 duckdb = ">=0.10.1"
 qnorm  = "*"
 scipy  = ">=1.10"
-seaborn = ">=0.13.2"
 typing_extensions = ">=4.6.3"
 anndata = "*"
 
@@ -55,9 +53,18 @@ pytest-cov = "^4.0"
 flake8 = "^7.0"
 
 [tool.poetry.extras]
+plotting = ["matplotlib", "seaborn"]
 directlfq = ["directlfq", "pyyaml"]
 inmoose = ["inmoose"]
-all = ["directlfq", "pyyaml", "inmoose"]
+all = ["directlfq", "pyyaml", "inmoose", "matplotlib", "seaborn"]
+
+[tool.poetry.dependencies.matplotlib]
+version = "*"
+optional = true
+
+[tool.poetry.dependencies.seaborn]
+version = ">=0.13.2"
+optional = true
 
 [tool.poetry.dependencies.directlfq]
 version = ">=0.3.0"

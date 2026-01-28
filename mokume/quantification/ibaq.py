@@ -14,7 +14,6 @@ import pandas as pd
 import numpy as np
 
 from pandas import DataFrame, Series
-from matplotlib.backends.backend_pdf import PdfPages
 
 from pyopenms import AASequence, ProteaseDigestion, FASTAFile
 
@@ -35,11 +34,10 @@ from mokume.core.constants import (
     MOLES_NMOL,
     WEIGHT_NG,
     is_parquet,
-    plot_box_plot,
-    plot_distributions,
     get_accession,
 )
 from mokume.core.logger import get_logger, log_execution_time, log_function_call
+from mokume.plotting import is_plotting_available
 
 # Proteomic Ruler constants
 AVAGADRO: float = 6.02214129e23
@@ -411,81 +409,89 @@ def peptides_to_protein(
 
     # Print the distribution of the protein IBAQ values
     if verbose:
-        plot_width = len(set(res[SAMPLE_ID])) * 0.5 + 10
-        pdf = PdfPages(qc_report)
-        density1 = plot_distributions(
-            res,
-            plot_column,
-            SAMPLE_ID,
-            log2=True,
-            width=plot_width,
-            title="{} Distribution".format(plot_column),
-        )
-        box1 = plot_box_plot(
-            res,
-            plot_column,
-            SAMPLE_ID,
-            log2=True,
-            width=plot_width,
-            title="{} Distribution".format(plot_column),
-            violin=False,
-        )
-        pdf.savefig(density1, bbox_inches="tight")
-        pdf.savefig(box1, bbox_inches="tight")
-        if tpa:
-            density2 = plot_distributions(
-                res, TPA, SAMPLE_ID, log2=True, width=plot_width, title="TPA Distribution"
+        if not is_plotting_available():
+            logger.warning(
+                "QC report skipped: plotting dependencies not installed. "
+                "Install with: pip install mokume[plotting]"
             )
-            box2 = plot_box_plot(
+        else:
+            from mokume.plotting import plot_distributions, plot_box_plot, PdfPages
+
+            plot_width = len(set(res[SAMPLE_ID])) * 0.5 + 10
+            pdf = PdfPages(qc_report)
+            density1 = plot_distributions(
                 res,
-                TPA,
+                plot_column,
                 SAMPLE_ID,
                 log2=True,
                 width=plot_width,
-                title="{} Distribution".format(TPA),
+                title="{} Distribution".format(plot_column),
+            )
+            box1 = plot_box_plot(
+                res,
+                plot_column,
+                SAMPLE_ID,
+                log2=True,
+                width=plot_width,
+                title="{} Distribution".format(plot_column),
                 violin=False,
             )
-            pdf.savefig(density2, bbox_inches="tight")
-            pdf.savefig(box2, bbox_inches="tight")
-        if ruler:
-            density3 = plot_distributions(
-                res,
-                COPYNUMBER,
-                SAMPLE_ID,
-                width=plot_width,
-                log2=True,
-                title="{} Distribution".format(COPYNUMBER),
-            )
-            box3 = plot_box_plot(
-                res,
-                COPYNUMBER,
-                SAMPLE_ID,
-                width=plot_width,
-                log2=True,
-                title="{} Distribution".format(COPYNUMBER),
-                violin=False,
-            )
-            pdf.savefig(density3, bbox_inches="tight")
-            pdf.savefig(box3, bbox_inches="tight")
-            density4 = plot_distributions(
-                res,
-                CONCENTRATION_NM,
-                SAMPLE_ID,
-                width=plot_width,
-                log2=True,
-                title="{} Distribution".format(CONCENTRATION_NM),
-            )
-            box4 = plot_box_plot(
-                res,
-                CONCENTRATION_NM,
-                SAMPLE_ID,
-                width=plot_width,
-                log2=True,
-                title="{} Distribution".format(CONCENTRATION_NM),
-                violin=False,
-            )
-            pdf.savefig(density4, bbox_inches="tight")
-            pdf.savefig(box4, bbox_inches="tight")
-        pdf.close()
+            pdf.savefig(density1, bbox_inches="tight")
+            pdf.savefig(box1, bbox_inches="tight")
+            if tpa:
+                density2 = plot_distributions(
+                    res, TPA, SAMPLE_ID, log2=True, width=plot_width, title="TPA Distribution"
+                )
+                box2 = plot_box_plot(
+                    res,
+                    TPA,
+                    SAMPLE_ID,
+                    log2=True,
+                    width=plot_width,
+                    title="{} Distribution".format(TPA),
+                    violin=False,
+                )
+                pdf.savefig(density2, bbox_inches="tight")
+                pdf.savefig(box2, bbox_inches="tight")
+            if ruler:
+                density3 = plot_distributions(
+                    res,
+                    COPYNUMBER,
+                    SAMPLE_ID,
+                    width=plot_width,
+                    log2=True,
+                    title="{} Distribution".format(COPYNUMBER),
+                )
+                box3 = plot_box_plot(
+                    res,
+                    COPYNUMBER,
+                    SAMPLE_ID,
+                    width=plot_width,
+                    log2=True,
+                    title="{} Distribution".format(COPYNUMBER),
+                    violin=False,
+                )
+                pdf.savefig(density3, bbox_inches="tight")
+                pdf.savefig(box3, bbox_inches="tight")
+                density4 = plot_distributions(
+                    res,
+                    CONCENTRATION_NM,
+                    SAMPLE_ID,
+                    width=plot_width,
+                    log2=True,
+                    title="{} Distribution".format(CONCENTRATION_NM),
+                )
+                box4 = plot_box_plot(
+                    res,
+                    CONCENTRATION_NM,
+                    SAMPLE_ID,
+                    width=plot_width,
+                    log2=True,
+                    title="{} Distribution".format(CONCENTRATION_NM),
+                    violin=False,
+                )
+                pdf.savefig(density4, bbox_inches="tight")
+                pdf.savefig(box4, bbox_inches="tight")
+            pdf.close()
 
     res.to_csv(output, sep="\t", index=False)

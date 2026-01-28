@@ -1,52 +1,24 @@
 """
 CLI command for t-SNE visualization.
+
+Note: This module requires the optional 'plotting' dependencies.
+Install them with: pip install mokume[plotting]
 """
 
 import glob
 import logging
 
 import click
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
-from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 
 from mokume.core.constants import PROTEIN_NAME, SAMPLE_ID, IBAQ_LOG
+from mokume.plotting import is_plotting_available
 
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
-
-
-def compute_pca(df, n_components=5) -> pd.DataFrame:
-    """Compute principal components for a given dataframe."""
-    pca = PCA(n_components=n_components)
-    pca.fit(df)
-    df_pca = pca.transform(df)
-    df_pca = pd.DataFrame(
-        df_pca, index=df.index, columns=[f"PC{i}" for i in range(1, n_components + 1)]
-    )
-
-    plt.rcParams["figure.figsize"] = (12, 6)
-    fig, ax = plt.subplots()
-    xi = np.arange(1, n_components + 1, step=1)
-    y = np.cumsum(pca.explained_variance_ratio_)
-
-    plt.ylim(0.0, 1.1)
-    plt.plot(xi, y, marker="o", linestyle="--", color="b")
-    plt.xlabel("Number of Components")
-    plt.xticks(np.arange(0, n_components, step=1))
-    plt.ylabel("Cumulative variance (%)")
-    plt.title("The number of components needed to explain variance")
-
-    plt.axhline(y=0.95, color="r", linestyle="-")
-    plt.text(0.5, 0.85, "95% cut-off threshold", color="red", fontsize=16)
-    ax.grid(axis="x")
-    plt.show()
-
-    return df_pca
 
 
 def compute_tsne(df_pca, n_components=2, perplexity=30, learning_rate=200, n_iter=2000):
@@ -64,18 +36,6 @@ def compute_tsne(df_pca, n_components=2, perplexity=30, learning_rate=200, n_ite
     return df_tsne
 
 
-def plot_tsne(df, x_col, y_col, hue_col, file_name):
-    """Generate and save a t-SNE scatter plot from a DataFrame."""
-    fig, ax = plt.subplots(1, 1, figsize=(20, 10))
-    sns.scatterplot(x=x_col, y=y_col, hue=hue_col, data=df, ax=ax, markers=["o", "+", "x"])
-    ax.set_xlabel(x_col)
-    ax.set_ylabel(y_col)
-    ax.set_title(f"{x_col} vs {y_col} with {hue_col} information")
-    plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.0, fontsize=8)
-    plt.subplots_adjust(right=0.8)
-    plt.savefig(file_name)
-
-
 @click.command()
 @click.option("-f", "--folder", help="Folder that contains all the protein files", required=True)
 @click.option(
@@ -87,6 +47,14 @@ def plot_tsne(df, x_col, y_col, hue_col, file_name):
 )
 def tsne_visualization(folder: str, pattern: str):
     """Generate a t-SNE visualization for protein data from specified files."""
+    if not is_plotting_available():
+        raise click.ClickException(
+            "Plotting dependencies (matplotlib, seaborn) are not installed. "
+            "Install them with: pip install mokume[plotting]"
+        )
+
+    from mokume.plotting import compute_pca_with_plot, plot_tsne
+
     files = glob.glob(f"{folder}/*{pattern}")
     dfs = []
 
@@ -107,7 +75,7 @@ def tsne_visualization(folder: str, pattern: str):
         values=IBAQ_LOG,
     )
     normalize_df = normalize_df.fillna(0)
-    df_pca = compute_pca(normalize_df, n_components=30)
+    df_pca = compute_pca_with_plot(normalize_df, n_components=30)
     df_tsne = compute_tsne(df_pca)
 
     batch = df_tsne.index.get_level_values("reanalysis").tolist()
