@@ -49,6 +49,13 @@ from mokume.core.constants import (
     AGGREGATION_LEVEL_SAMPLE,
 )
 from mokume.core.logger import get_logger
+from mokume.postprocessing.batch_correction import (
+    is_batch_correction_available,
+    detect_batches,
+    extract_covariates_from_sdrf,
+    apply_batch_correction,
+)
+from mokume.model.batch_correction import BatchDetectionMethod
 
 logger = get_logger("mokume.pipeline")
 
@@ -92,6 +99,21 @@ class PipelineConfig:
         Path to export normalized peptides.
     export_ions : str, optional
         Path to export normalized ions (DirectLFQ only).
+    batch_correction : bool
+        Whether to apply batch correction after quantification.
+    batch_method : str
+        Batch detection method: sample_prefix, run, column.
+    batch_column : str, optional
+        Column name for explicit batch assignment.
+    batch_covariates : list, optional
+        SDRF columns to use as covariates (biological signal to preserve).
+        Example: ["characteristics[sex]", "characteristics[organism part]"]
+    batch_parametric : bool
+        Use parametric estimation for ComBat.
+    batch_mean_only : bool
+        Only adjust batch means, not individual effects.
+    batch_ref : int, optional
+        Reference batch ID.
     """
 
     parquet: str
@@ -120,6 +142,15 @@ class PipelineConfig:
     # Optional exports
     export_peptides: Optional[str] = None
     export_ions: Optional[str] = None
+
+    # Batch correction (applied after protein quantification)
+    batch_correction: bool = False
+    batch_method: str = "sample_prefix"
+    batch_column: Optional[str] = None
+    batch_covariates: Optional[list] = None
+    batch_parametric: bool = True
+    batch_mean_only: bool = False
+    batch_ref: Optional[int] = None
 
 
 class QuantificationPipeline:
@@ -189,9 +220,15 @@ class QuantificationPipeline:
         logger.info(f"Starting pipeline with quant_method={quant_method}")
 
         if quant_method == "directlfq":
-            return self._run_directlfq_pipeline()
+            protein_df = self._run_directlfq_pipeline()
         else:
-            return self._run_mokume_pipeline()
+            protein_df = self._run_mokume_pipeline()
+
+        # Apply batch correction if configured
+        if self.config.batch_correction:
+            protein_df = self._apply_batch_correction(protein_df)
+
+        return protein_df
 
     def _run_directlfq_pipeline(self) -> pd.DataFrame:
         """
@@ -645,6 +682,149 @@ class QuantificationPipeline:
 
         return result_wide.reset_index()
 
+    def _apply_batch_correction(self, protein_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Apply batch correction after protein quantification.
+
+        Batch = technical variation to REMOVE (from runs/files)
+        Covariates = biological signal to PRESERVE (from SDRF characteristics)
+
+        Parameters
+        ----------
+        protein_df : pd.DataFrame
+            Protein intensities (proteins × samples format, with protein column).
+
+        Returns
+        -------
+        pd.DataFrame
+            Batch-corrected protein intensities.
+        """
+        if not is_batch_correction_available():
+            raise ImportError(
+                "Batch correction requires inmoose package. "
+                "Install with: pip install mokume[batch-correction]"
+            )
+
+        # Identify protein column and sample columns
+        if PROTEIN_NAME in protein_df.columns:
+            protein_col = PROTEIN_NAME
+        elif "protein" in protein_df.columns:
+            protein_col = "protein"
+        else:
+            protein_col = protein_df.columns[0]
+
+        sample_cols = [c for c in protein_df.columns if c != protein_col]
+
+        if len(sample_cols) < 2:
+            logger.warning("Not enough samples for batch correction, skipping")
+            return protein_df
+
+        # Create intensity matrix for batch correction (features × samples)
+        intensity_matrix = protein_df.set_index(protein_col)[sample_cols]
+
+        # 1. Detect batches (technical variation to remove)
+        try:
+            batch_method = BatchDetectionMethod.from_str(self.config.batch_method)
+        except ValueError:
+            logger.warning(
+                f"Unknown batch method '{self.config.batch_method}', "
+                "using sample_prefix"
+            )
+            batch_method = BatchDetectionMethod.SAMPLE_PREFIX
+
+        batch_indices = detect_batches(
+            sample_ids=sample_cols,
+            method=batch_method,
+            batch_column_values=(
+                self._get_batch_column_values(sample_cols)
+                if self.config.batch_column else None
+            ),
+        )
+
+        unique_batches = len(set(batch_indices))
+        logger.info(f"Detected {unique_batches} batches for batch correction")
+
+        if unique_batches < 2:
+            logger.warning("Only 1 batch detected, skipping batch correction")
+            return protein_df
+
+        # Check minimum samples per batch
+        from collections import Counter
+        batch_counts = Counter(batch_indices)
+        min_samples = min(batch_counts.values())
+        if min_samples < 2:
+            logger.warning(
+                f"Some batches have fewer than 2 samples (min={min_samples}), "
+                "skipping batch correction"
+            )
+            return protein_df
+
+        # 2. Extract covariates from SDRF (biological signal to preserve)
+        covariates = None
+        if self.config.sdrf and self.config.batch_covariates:
+            covariates = extract_covariates_from_sdrf(
+                self.config.sdrf,
+                sample_cols,
+                self.config.batch_covariates,
+            )
+            if covariates:
+                logger.info(
+                    f"Extracted {len(self.config.batch_covariates)} "
+                    f"covariates to preserve biological signal"
+                )
+
+        # 3. Apply ComBat batch correction
+        logger.info("Applying ComBat batch correction...")
+        try:
+            corrected_matrix = apply_batch_correction(
+                df=intensity_matrix,
+                batch=batch_indices,
+                covs=covariates,
+                kwargs={
+                    "par_prior": self.config.batch_parametric,
+                    "mean_only": self.config.batch_mean_only,
+                    "ref_batch": self.config.batch_ref,
+                },
+            )
+
+            # Reconstruct DataFrame with protein column
+            corrected_df = corrected_matrix.reset_index()
+            corrected_df = corrected_df.rename(columns={"index": protein_col})
+
+            logger.info(
+                f"Batch correction complete: {len(corrected_df)} proteins, "
+                f"{len(sample_cols)} samples"
+            )
+            return corrected_df
+
+        except Exception as e:
+            logger.error(f"Batch correction failed: {e}")
+            logger.warning("Returning uncorrected protein intensities")
+            return protein_df
+
+    def _get_batch_column_values(self, sample_ids: list) -> Optional[list]:
+        """Get batch values from SDRF for explicit batch column."""
+        if not self.config.sdrf or not self.config.batch_column:
+            return None
+
+        try:
+            import pandas as pd
+            sdrf = pd.read_csv(self.config.sdrf, sep="\t")
+            sdrf.columns = [c.lower() for c in sdrf.columns]
+
+            batch_col = self.config.batch_column.lower()
+            if batch_col not in sdrf.columns:
+                logger.warning(f"Batch column '{self.config.batch_column}' not in SDRF")
+                return None
+
+            # Map sample IDs to batch values
+            sample_to_batch = dict(zip(sdrf["source name"], sdrf[batch_col]))
+            return [sample_to_batch.get(s, "unknown") for s in sample_ids]
+
+        except Exception as e:
+            logger.warning(f"Failed to extract batch column: {e}")
+            return None
+
 
 def features_to_proteins(
     parquet: str,
@@ -662,6 +842,14 @@ def features_to_proteins(
     directlfq_num_cores: Optional[int] = None,
     export_peptides: Optional[str] = None,
     export_ions: Optional[str] = None,
+    # Batch correction parameters
+    batch_correction: bool = False,
+    batch_method: str = "sample_prefix",
+    batch_column: Optional[str] = None,
+    batch_covariates: Optional[list] = None,
+    batch_parametric: bool = True,
+    batch_mean_only: bool = False,
+    batch_ref: Optional[int] = None,
 ) -> pd.DataFrame:
     """
     Quantify proteins directly from feature parquet file.
@@ -716,6 +904,21 @@ def features_to_proteins(
         Path to export normalized peptides (for debugging/analysis).
     export_ions : str, optional
         Path to export normalized ions (DirectLFQ only).
+    batch_correction : bool
+        Whether to apply batch correction after quantification. Default: False.
+    batch_method : str
+        Batch detection method: sample_prefix, run, column. Default: sample_prefix.
+    batch_column : str, optional
+        Column name for explicit batch assignment (when batch_method='column').
+    batch_covariates : list, optional
+        SDRF columns to use as covariates (biological signal to preserve).
+        Example: ["characteristics[sex]", "characteristics[organism part]"]
+    batch_parametric : bool
+        Use parametric estimation for ComBat. Default: True.
+    batch_mean_only : bool
+        Only adjust batch means, not individual effects. Default: False.
+    batch_ref : int, optional
+        Reference batch ID.
 
     Returns
     -------
@@ -739,6 +942,16 @@ def features_to_proteins(
     ...     sample_normalization="hierarchical",
     ...     fasta_file="uniprot.fasta",
     ... )
+
+    >>> # MaxLFQ with batch correction and covariates
+    >>> proteins = features_to_proteins(
+    ...     parquet="data.parquet",
+    ...     output="proteins.csv",
+    ...     sdrf="experiment.sdrf.tsv",
+    ...     quant_method="maxlfq",
+    ...     batch_correction=True,
+    ...     batch_covariates=["characteristics[sex]", "characteristics[tissue]"],
+    ... )
     """
     config = PipelineConfig(
         parquet=parquet,
@@ -755,6 +968,14 @@ def features_to_proteins(
         directlfq_num_cores=directlfq_num_cores,
         export_peptides=export_peptides,
         export_ions=export_ions,
+        # Batch correction
+        batch_correction=batch_correction,
+        batch_method=batch_method,
+        batch_column=batch_column,
+        batch_covariates=batch_covariates,
+        batch_parametric=batch_parametric,
+        batch_mean_only=batch_mean_only,
+        batch_ref=batch_ref,
     )
 
     pipeline = QuantificationPipeline(config)

@@ -30,6 +30,10 @@ from mokume.model.normalization import (
 from mokume.model.organism import OrganismDescription
 from mokume.model.quantification import QuantificationMethod
 from mokume.model.summarization import SummarizationMethod
+from mokume.model.batch_correction import (
+    BatchDetectionMethod,
+    BatchCorrectionConfig,
+)
 
 __all__ = [
     # Labeling
@@ -54,4 +58,7 @@ __all__ = [
     "QuantificationMethod",
     # Summarization
     "SummarizationMethod",
+    # Batch correction
+    "BatchDetectionMethod",
+    "BatchCorrectionConfig",
 ]

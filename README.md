@@ -276,12 +276,16 @@ mokume features2peptides \
 ### Batch Correction
 
 ```bash
+# Standalone batch correction (post-quantification)
 mokume correct-batches \
     -f ibaq_folder/ \
     -p "*ibaq.tsv" \
     -o corrected_ibaq.tsv \
     --export_anndata
 ```
+
+> **Note:** For integrated batch correction during quantification, use the Python API
+> with `PipelineConfig(batch_correction=True, ...)`. See Python API section below.
 
 ### t-SNE Visualization
 
@@ -489,39 +493,113 @@ peptide_normalization(
 
 ### Batch Correction
 
-```python
-from mokume.io.parquet import combine_ibaq_tsv_files
-from mokume.postprocessing.reshape import pivot_wider, pivot_longer
-from mokume.postprocessing.batch_correction import apply_batch_correction
+Batch effects are systematic technical variations introduced during sample processing that can obscure true biological differences. Common sources include:
+- Different processing days or times
+- Different instruments or operators
+- Different reagent lots
+- Samples processed in different labs
 
-# Load and combine multiple TSV files
-df = combine_ibaq_tsv_files("data/", pattern="*ibaq.tsv", sep="\t")
+**mokume** uses the ComBat algorithm (via [inmoose](https://github.com/epigenelabs/inmoose)) to remove batch effects while preserving biological signal.
+
+#### Key Concepts
+
+| Term | Definition | Example |
+|------|------------|---------|
+| **Batch** | Technical variation to **REMOVE** | Samples from Lab A vs Lab B |
+| **Covariate** | Biological signal to **PRESERVE** | Tissue type, sex, disease status |
+
+**Why covariates matter:** Without covariates, batch correction may accidentally remove biological signal that correlates with batch assignments. For example, if all liver samples were processed on Day 1 and all brain samples on Day 2, naive batch correction would remove the tissue-specific signal. By specifying tissue as a covariate, ComBat preserves this biological variation.
+
+```
+Without covariates:  Batch effect removed, but tissue signal also reduced
+With covariates:     Batch effect removed, tissue signal preserved
+```
+
+**Requires optional dependency:** `pip install mokume[batch-correction]`
+
+#### Integrated Pipeline Approach (Recommended)
+
+```python
+from mokume.pipeline import QuantificationPipeline, PipelineConfig
+
+# Batch correction with covariates from SDRF
+config = PipelineConfig(
+    parquet="data.parquet",
+    sdrf="experiment.sdrf.tsv",
+    quant_method="maxlfq",
+    # Batch correction options
+    batch_correction=True,
+    batch_method="sample_prefix",  # Detect batches from sample names
+    batch_covariates=[             # Preserve biological signal from SDRF
+        "characteristics[sex]",
+        "characteristics[organism part]",
+    ],
+)
+
+pipeline = QuantificationPipeline(config)
+proteins = pipeline.run()  # Returns batch-corrected protein matrix
+```
+
+#### Low-Level API
+
+```python
+from mokume.postprocessing import (
+    apply_batch_correction,
+    detect_batches,
+    extract_covariates_from_sdrf,
+    pivot_wider,
+    pivot_longer,
+)
 
 # Reshape to wide format (proteins x samples)
-df_wide = pivot_wider(
-    df,
-    row_name="ProteinName",
-    col_name="SampleID",
-    values="Ibaq",
-    fillna=True
+df_wide = pivot_wider(df, row_name="ProteinName", col_name="SampleID", values="Ibaq")
+
+# Detect batches from sample names
+batch_indices = detect_batches(
+    sample_ids=df_wide.columns.tolist(),
+    method="sample_prefix",  # PXD001-S1 → batch=PXD001
 )
 
-# Extract batch IDs from sample names
-import pandas as pd
-batch_ids = [name.split("-")[0] for name in df_wide.columns]
-batch_ids = pd.factorize(batch_ids)[0]
+# Extract covariates from SDRF (biological signal to preserve)
+covariates = extract_covariates_from_sdrf(
+    "experiment.sdrf.tsv",
+    sample_ids=df_wide.columns.tolist(),
+    covariate_columns=["characteristics[sex]", "characteristics[tissue]"],
+)
 
 # Apply ComBat batch correction
-df_corrected = apply_batch_correction(df_wide, list(batch_ids), kwargs={})
-
-# Reshape back to long format
-df_long = pivot_longer(
-    df_corrected,
-    row_name="ProteinName",
-    col_name="SampleID",
-    values="IbaqCorrected"
+df_corrected = apply_batch_correction(
+    df=df_wide,
+    batch=batch_indices,
+    covs=covariates,  # Preserve biological signal
 )
 ```
+
+#### Batch Detection Methods
+
+| Method | Description | Example |
+|--------|-------------|---------|
+| `sample_prefix` | Extract from sample name prefix | `PXD001-S1` → `PXD001` |
+| `run` | Use run/reference file name | Each file is a batch |
+| `column` | Explicit values from SDRF column | User-specified |
+
+#### When to Use Batch Correction
+
+**Recommended scenarios:**
+- Combining datasets from multiple studies (e.g., PXD001 + PXD002)
+- Samples processed on different days/instruments
+- Multi-site studies with different labs
+
+**Requirements:**
+- At least 2 samples per batch (ComBat requirement)
+- At least 2 batches to correct
+
+#### Best Practices
+
+1. **Always specify covariates** when biological groups correlate with batches
+2. **Use SDRF characteristics** to identify biological variables to preserve
+3. **Apply at protein level** (after quantification) for best results
+4. **Verify results** by checking that biological signal (e.g., tissue clustering) is preserved
 
 ### Data Reshaping
 

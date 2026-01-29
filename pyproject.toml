@@ -55,7 +55,8 @@ flake8 = "^7.0"
 [tool.poetry.extras]
 plotting = ["matplotlib", "seaborn"]
 directlfq = ["directlfq", "pyyaml"]
-inmoose = ["inmoose"]
+batch-correction = ["inmoose"]
+inmoose = ["inmoose"]  # Deprecated alias, use batch-correction instead
 all = ["directlfq", "pyyaml", "inmoose", "matplotlib", "seaborn"]
 
 [tool.poetry.dependencies.matplotlib]
