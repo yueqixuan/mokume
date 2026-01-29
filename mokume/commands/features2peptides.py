@@ -57,14 +57,16 @@ from mokume.model.filters import PreprocessingFilterConfig
 )
 @click.option("--skip_normalization", help="Skip normalization step", is_flag=True, default=False)
 @click.option(
-    "--nmethod",
-    help="Normalization method used to normalize feature intensities for tec (options: mean, median, iqr, none)",
+    "--run-normalization",
+    "run_normalization",
+    help="Normalization method for technical replicates/runs within each sample (options: mean, median, iqr, none)",
     default="median",
     type=click.Choice([f.name.lower() for f in FeatureNormalizationMethod], case_sensitive=False),
 )
 @click.option(
-    "--pnmethod",
-    help="Normalization method used to normalize peptides intensities for all samples (options:globalMedian, conditionMedian)",
+    "--sample-normalization",
+    "sample_normalization",
+    help="Normalization method for samples relative to each other (options: globalMedian, conditionMedian, hierarchical)",
     default="globalMedian",
     type=click.Choice([p.name.lower() for p in PeptideNormalizationMethod], case_sensitive=False),
 )
@@ -181,8 +183,8 @@ def features2parquet(
     remove_low_frequency_peptides: bool,
     output: str,
     skip_normalization: bool,
-    nmethod: str,
-    pnmethod: str,
+    run_normalization: str,
+    sample_normalization: str,
     log2: bool,
     save_parquet: bool,
     irs_channel: str,
@@ -259,8 +261,8 @@ def features2parquet(
         remove_low_frequency_peptides=remove_low_frequency_peptides,
         output=output,
         skip_normalization=skip_normalization,
-        nmethod=nmethod,
-        pnmethod=pnmethod,
+        nmethod=run_normalization,
+        pnmethod=sample_normalization,
         log2=log2,
         save_parquet=save_parquet,
         irs_channel=irs_channel,

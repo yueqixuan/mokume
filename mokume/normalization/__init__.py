@@ -2,7 +2,7 @@
 Normalization implementations for the mokume package.
 
 This module provides implementations for feature-level, peptide-level,
-and protein-level normalization.
+protein-level, and hierarchical sample normalization.
 """
 
 from mokume.normalization.feature import (
@@ -17,6 +17,11 @@ from mokume.normalization.peptide import (
     remove_protein_by_ids,
     Feature,
 )
+from mokume.normalization.hierarchical import (
+    HierarchicalSampleNormalizer,
+    HierarchicalIonAligner,
+    DistanceMetric,
+)
 
 __all__ = [
     # Feature normalization
@@ -29,4 +34,8 @@ __all__ = [
     "remove_contaminants_entrapments_decoys",
     "remove_protein_by_ids",
     "Feature",
+    # Hierarchical normalization (DirectLFQ-style, native mokume)
+    "HierarchicalSampleNormalizer",
+    "HierarchicalIonAligner",
+    "DistanceMetric",
 ]

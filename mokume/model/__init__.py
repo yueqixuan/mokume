@@ -23,6 +23,9 @@ from mokume.model.labeling import (
 from mokume.model.normalization import (
     FeatureNormalizationMethod,
     PeptideNormalizationMethod,
+    # Preferred names (aliases)
+    RunNormalizationMethod,
+    SampleNormalizationMethod,
 )
 from mokume.model.organism import OrganismDescription
 from mokume.model.quantification import QuantificationMethod
@@ -42,6 +45,9 @@ __all__ = [
     # Normalization
     "FeatureNormalizationMethod",
     "PeptideNormalizationMethod",
+    # Normalization (preferred names)
+    "RunNormalizationMethod",
+    "SampleNormalizationMethod",
     # Organism
     "OrganismDescription",
     # Quantification
