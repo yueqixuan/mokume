@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 
 from mokume.commands.features2peptides import features2parquet
+from mokume.commands.features2proteins import features2proteins
 from mokume.commands.peptides2protein import peptides2protein
 from mokume.commands.visualize import tsne_visualization
 from mokume.commands.batch_correct import correct_batches
@@ -67,6 +68,7 @@ def cli(log_level: str, log_file: Path):
 
 
 cli.add_command(features2parquet)
+cli.add_command(features2proteins)  # Unified pipeline (recommended)
 cli.add_command(peptides2protein)
 cli.add_command(tsne_visualization)
 cli.add_command(correct_batches)

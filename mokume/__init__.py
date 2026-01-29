@@ -21,3 +21,13 @@ from mokume.core.logging_config import initialize_logging
 # Initialize logging with default settings
 # Users can override these settings by calling initialize_logging with their own settings
 initialize_logging()
+
+# Availability checks for optional dependencies
+from mokume.quantification.directlfq import is_directlfq_available
+from mokume.postprocessing.batch_correction import is_batch_correction_available
+
+__all__ = [
+    "__version__",
+    "is_directlfq_available",
+    "is_batch_correction_available",
+]

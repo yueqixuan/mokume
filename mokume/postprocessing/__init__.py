@@ -18,6 +18,10 @@ from mokume.postprocessing.batch_correction import (
     get_batch_info_from_sample_names,
     remove_single_sample_batches,
     iterative_outlier_removal,
+    is_batch_correction_available,
+    is_inmoose_available,
+    detect_batches,
+    extract_covariates_from_sdrf,
 )
 from mokume.postprocessing.combiner import Combiner
 
@@ -34,6 +38,10 @@ __all__ = [
     "get_batch_info_from_sample_names",
     "remove_single_sample_batches",
     "iterative_outlier_removal",
+    "is_batch_correction_available",
+    "is_inmoose_available",
+    "detect_batches",
+    "extract_covariates_from_sdrf",
     # Combiner
     "Combiner",
 ]
