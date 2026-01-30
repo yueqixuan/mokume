@@ -62,7 +62,8 @@ def get_quantification_method(method: str, **kwargs) -> ProteinQuantificationMet
     ----------
     method : str
         Name of the quantification method. One of:
-        'top3', 'topn', 'maxlfq', 'directlfq', 'all', 'sum'.
+        'topN' (where N is any number, e.g., 'top3', 'top5', 'top10'),
+        'maxlfq', 'directlfq', 'all', 'sum'.
     **kwargs
         Additional arguments passed to the quantification method constructor.
 
@@ -72,7 +73,7 @@ def get_quantification_method(method: str, **kwargs) -> ProteinQuantificationMet
             - use_variance_guided: bool (default True)
 
         For TopN:
-            - n: int (default 3)
+            - n: int (default 3, can also be parsed from method name)
 
         For DirectLFQ:
             - min_nonan: int (default 1)
@@ -96,16 +97,24 @@ def get_quantification_method(method: str, **kwargs) -> ProteinQuantificationMet
     >>> method = get_quantification_method("maxlfq", min_peptides=2, n_jobs=4)
     >>> result = method.quantify(peptide_df, ...)
 
+    >>> # TopN with any N
+    >>> method = get_quantification_method("top5")  # Top 5 peptides
+    >>> method = get_quantification_method("top10")  # Top 10 peptides
+
     >>> # DirectLFQ requires optional install
     >>> method = get_quantification_method("directlfq", min_nonan=2)
     """
+    import re
+
     method_lower = method.lower()
 
-    if method_lower == "top3":
-        return Top3Quantification()
-
-    elif method_lower == "topn":
-        n = kwargs.get("n", 3)
+    # Handle topN methods (top3, top5, top10, etc.)
+    if method_lower.startswith("top"):
+        match = re.match(r"top(\d+)", method_lower)
+        if match:
+            n = int(match.group(1))
+        else:
+            n = kwargs.get("n", 3)
         return TopNQuantification(n=n)
 
     elif method_lower == "maxlfq":
@@ -128,7 +137,7 @@ def get_quantification_method(method: str, **kwargs) -> ProteinQuantificationMet
         return AllPeptidesQuantification()
 
     else:
-        available = "top3, topn, maxlfq, directlfq, all/sum"
+        available = "topN (e.g., top3, top5, top10), maxlfq, directlfq, all/sum"
         raise ValueError(
             f"Unknown quantification method: {method}. "
             f"Available methods: {available}"

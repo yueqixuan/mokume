@@ -241,25 +241,31 @@ _peptide_method_registry = {}
 
 class PeptideNormalizationMethod(Enum):
     """
-    Enumeration for peptide normalization methods.
+    Enumeration for peptide/sample normalization methods.
+
+    Also known as SampleNormalizationMethod (preferred name going forward).
 
     Provides functionality to register and apply normalization functions
-    to peptide data.
+    to peptide data across samples.
 
     Attributes
     ----------
     NONE : auto
         No normalization.
     GlobalMedian : auto
-        Normalization using global median.
+        Normalization using global median (sample median / global median).
     ConditionMedian : auto
         Normalization using condition-specific median.
+    Hierarchical : auto
+        DirectLFQ-style hierarchical clustering-based normalization.
+        Uses HierarchicalSampleNormalizer from mokume.normalization.hierarchical.
     """
 
     NONE = auto()
 
     GlobalMedian = auto()
     ConditionMedian = auto()
+    Hierarchical = auto()  # DirectLFQ-style, native mokume implementation
 
     @classmethod
     def from_str(cls, name: str) -> "PeptideNormalizationMethod":
@@ -350,3 +356,31 @@ def condition_median(dataset_df, sample: str, med_map: dict):
 def peptide_no_normalization(dataset_df, sample, med_map):
     """No normalization is performed on the data."""
     return dataset_df
+
+
+@PeptideNormalizationMethod.Hierarchical.register_replicate_fn
+def hierarchical_normalization(dataset_df, sample, med_map):
+    """
+    Hierarchical normalization placeholder.
+
+    Note: This is a placeholder. Hierarchical normalization should be applied
+    using HierarchicalSampleNormalizer from mokume.normalization.hierarchical
+    at the dataset level, not per-sample. This registration is for API consistency.
+    """
+    # Hierarchical normalization is applied at the dataset level,
+    # not per-sample. This function returns the data unchanged.
+    # The actual normalization happens in the pipeline before this point.
+    return dataset_df
+
+
+# ============================================================================
+# Backward-compatible aliases (preferred names going forward)
+# ============================================================================
+
+# RunNormalizationMethod is the preferred name for FeatureNormalizationMethod
+# (normalizes technical replicates/runs within each sample)
+RunNormalizationMethod = FeatureNormalizationMethod
+
+# SampleNormalizationMethod is the preferred name for PeptideNormalizationMethod
+# (normalizes samples relative to each other)
+SampleNormalizationMethod = PeptideNormalizationMethod

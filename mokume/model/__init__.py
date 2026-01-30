@@ -23,10 +23,17 @@ from mokume.model.labeling import (
 from mokume.model.normalization import (
     FeatureNormalizationMethod,
     PeptideNormalizationMethod,
+    # Preferred names (aliases)
+    RunNormalizationMethod,
+    SampleNormalizationMethod,
 )
 from mokume.model.organism import OrganismDescription
 from mokume.model.quantification import QuantificationMethod
 from mokume.model.summarization import SummarizationMethod
+from mokume.model.batch_correction import (
+    BatchDetectionMethod,
+    BatchCorrectionConfig,
+)
 
 __all__ = [
     # Labeling
@@ -42,10 +49,16 @@ __all__ = [
     # Normalization
     "FeatureNormalizationMethod",
     "PeptideNormalizationMethod",
+    # Normalization (preferred names)
+    "RunNormalizationMethod",
+    "SampleNormalizationMethod",
     # Organism
     "OrganismDescription",
     # Quantification
     "QuantificationMethod",
     # Summarization
     "SummarizationMethod",
+    # Batch correction
+    "BatchDetectionMethod",
+    "BatchCorrectionConfig",
 ]
